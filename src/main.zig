@@ -18,14 +18,22 @@ const block_width = 1;
 const block_height = 1;
 const chunk_dim = 16;
 
+const cursor_thickness_in_pixels = 2;
+const cursor_length_in_pixels = 30;
+
+const target_range_in_blocks = 4;
 const move_speed = 0.05;
 const mouse_sens = 0.05;
 
 const font_size = 30;
 const font_spacing = 2;
 
-inline fn blockSpace(x: f32, y: f32, z: f32) rl.Vector3 {
-    return rl.Vector3{ .x = x + 0.5, .y = y + 0.5 - 1, .z = z + 0.5 };
+inline fn worldToBlock(x: f32, y: f32, z: f32) rl.Vector3 {
+    return rl.Vector3{ .x = @floor(x - block_width / 2), .y = @floor(y - block_height / 2), .z = @floor(z - block_length / 2) };
+}
+
+inline fn blockToWorld(x: f32, y: f32, z: f32) rl.Vector3 {
+    return rl.Vector3{ .x = x + block_width / 2, .y = y + block_height / 2, .z = z + block_length / 2 };
 }
 
 pub fn main() !void {
@@ -37,10 +45,11 @@ pub fn main() !void {
     rl.DisableCursor();
 
     const font = rl.LoadFont("data/FiraCode-Medium.ttf");
-    var grass_texture = rl.LoadTexture("data/textures/default_grass.png");
+    var grass_texture = rl.LoadTexture("data/textures/default_desert_sand.png");
     var dirt_texture = rl.LoadTexture("data/textures/default_dirt.png");
 
-    var debug_overlay = false;
+    var debug_axes = false;
+    var debug_text_info = false;
 
     var camera: rl.Camera = undefined;
     camera.position = rl.Vector3{ .x = 0.0, .y = 10.0, .z = 10.0 };
@@ -51,10 +60,11 @@ pub fn main() !void {
 
     while (!rl.WindowShouldClose()) {
         const screen_dim = rl.Vector2{ .x = @intToFloat(f32, rl.GetScreenWidth()), .y = @intToFloat(f32, rl.GetScreenHeight()) };
-        _ = screen_dim;
+        const screen_mid = rl.Vector2Scale(screen_dim, 0.5);
 
         if (rl.IsKeyPressed(rl.KeyboardKey.KEY_F1)) {
-            debug_overlay = !debug_overlay;
+            debug_axes = !debug_axes;
+            debug_text_info = !debug_text_info;
         }
 
         var speed_scalar: f32 = 1;
@@ -84,6 +94,30 @@ pub fn main() !void {
 
         rl.UpdateCameraPro(&camera, camera_move, rl.Vector3{ .x = rl.GetMouseDelta().x * mouse_sens, .y = rl.GetMouseDelta().y * mouse_sens, .z = 0 }, rl.GetMouseWheelMove());
 
+        // const debug_color_axes_pos = rl.Vector3Add(camera.position, rl.Vector3Scale(rl.GetCameraForward(&camera), 0.3));
+        var target_block_coords: rl.Vector3 = undefined;
+        var target_block_collision: rl.RayCollision = undefined;
+        const target_block_ray = rl.Ray{ .position = camera.position, .direction = rl.GetCameraForward(&camera) };
+        target_block_collision.hit = false;
+        {
+            var block_z: i16 = -chunk_dim;
+            outer: while (block_z < chunk_dim) : (block_z += 1) {
+                var block_x: i16 = -chunk_dim;
+                while (block_x < chunk_dim) : (block_x += 1) {
+                    const block_start = blockToWorld(@intToFloat(f32, block_x), 0, @intToFloat(f32, block_z));
+                    const bounding_box = rl.BoundingBox{
+                        .min = block_start,
+                        .max = rl.Vector3Add(block_start, rl.Vector3{ .x = block_width, .y = -block_height, .z = block_length }),
+                    };
+                    target_block_collision = rl.GetRayCollisionBox(target_block_ray, bounding_box);
+                    if (target_block_collision.hit) { //and target_block_collision.distance < target_range_in_blocks) {
+                        target_block_coords = target_block_collision.point; //rl.Vector3{ .x = @floor(target_block_collision.point.x), .y = @floor(target_block_collision.point.y), .z = @floor(target_block_collision.point.z) };
+                        break :outer;
+                    }
+                }
+            }
+        }
+
         rl.BeginDrawing();
         rl.ClearBackground(rl.BLACK);
         rl.BeginMode3D(camera);
@@ -93,26 +127,25 @@ pub fn main() !void {
         while (block_z < chunk_dim) : (block_z += 1) {
             var block_x: i16 = -chunk_dim;
             while (block_x < chunk_dim) : (block_x += 1) {
-                DrawCubeTexture(grass_texture, dirt_texture, blockSpace(@intToFloat(f32, block_x), 0, @intToFloat(f32, block_z)), block_width, block_height, block_length, rl.WHITE);
+                const tint = if (target_block_collision.hit and block_z == @floatToInt(i16, target_block_coords.z) and block_x == @floatToInt(i16, target_block_coords.x)) rl.GRAY else rl.WHITE;
+                DrawCubeTexture(grass_texture, dirt_texture, blockToWorld(@intToFloat(f32, block_x), 0, @intToFloat(f32, block_z)), block_width, block_height, block_length, tint);
             }
         }
 
-        if (debug_overlay) {
-            const start_pos = rl.Vector3Add(camera.position, rl.Vector3Scale(rl.GetCameraForward(&camera), 0.3));
-            rl.DrawLine3D(start_pos, rl.Vector3Add(start_pos, rl.Vector3{ .x = 0.03, .y = 0, .z = 0 }), rl.RED);
-            rl.DrawLine3D(start_pos, rl.Vector3Add(start_pos, rl.Vector3{ .x = 0, .y = 0.03, .z = 0 }), rl.GREEN);
-            rl.DrawLine3D(start_pos, rl.Vector3Add(start_pos, rl.Vector3{ .x = 0, .y = 0, .z = 0.03 }), rl.BLUE);
+        // if (debug_axes) {
+        //     rl.DrawLine3D(debug_color_axes_pos, rl.Vector3Add(debug_color_axes_pos, rl.Vector3{ .x = 0.03, .y = 0, .z = 0 }), rl.RED);
+        //     rl.DrawLine3D(debug_color_axes_pos, rl.Vector3Add(debug_color_axes_pos, rl.Vector3{ .x = 0, .y = 0.03, .z = 0 }), rl.GREEN);
+        //     rl.DrawLine3D(debug_color_axes_pos, rl.Vector3Add(debug_color_axes_pos, rl.Vector3{ .x = 0, .y = 0, .z = 0.03 }), rl.BLUE);
+        // }
 
-            //rl.DrawLine3D(rl.Vector3{ .x = 0, .y = 0, .z = 0 }, rl.Vector3Normalize(rl.Vector3Subtract(camera.target, camera.position)), rl.RED);
-
-            std.debug.print("{}\n", .{rl.GetCameraForward(&camera)});
-            //            rl.DrawLine3D(start_pos, rl.Vector3Add(start_pos, rl.Vector3{}), rl.YELLOW);
-        }
-
-        // rl.DrawGrid(100, 1.0);
         rl.EndMode3D();
 
-        if (debug_overlay) {
+        rl.DrawLineEx(screen_mid, rl.Vector2Add(screen_mid, rl.Vector2{ .x = -cursor_length_in_pixels, .y = 0 }), cursor_thickness_in_pixels, rl.WHITE);
+        rl.DrawLineEx(screen_mid, rl.Vector2Add(screen_mid, rl.Vector2{ .x = cursor_length_in_pixels, .y = 0 }), cursor_thickness_in_pixels, rl.WHITE);
+        rl.DrawLineEx(screen_mid, rl.Vector2Add(screen_mid, rl.Vector2{ .x = 0, .y = -cursor_length_in_pixels }), cursor_thickness_in_pixels, rl.WHITE);
+        rl.DrawLineEx(screen_mid, rl.Vector2Add(screen_mid, rl.Vector2{ .x = 0, .y = cursor_length_in_pixels }), cursor_thickness_in_pixels, rl.WHITE);
+
+        if (debug_text_info) {
             var strz_buffer: [256]u8 = undefined;
             const fps_strz = try std.fmt.bufPrintZ(&strz_buffer, "FPS:{d}", .{rl.GetFPS()});
             const fps_strz_dim = rl.MeasureTextEx(font, @ptrCast([*c]const u8, fps_strz), font_size, font_spacing);
@@ -122,10 +155,13 @@ pub fn main() !void {
             const camera_pos_strz_dim = rl.MeasureTextEx(font, @ptrCast([*c]const u8, camera_pos_strz), font_size, font_spacing);
             rl.DrawTextEx(font, @ptrCast([*c]const u8, camera_pos_strz), rl.Vector2{ .x = 0, .y = fps_strz_dim.y }, font_size, font_spacing, rl.WHITE);
 
-            const camera_target_strz = try std.fmt.bufPrintZ(&strz_buffer, "camera target: (x:{d:.2}, y:{d:.2}, z:{d:.2})", .{ camera.target.x, camera.target.y, camera.target.z });
-            const camera_target_strz_dim = rl.MeasureTextEx(font, @ptrCast([*c]const u8, camera_target_strz), font_size, font_spacing);
-            _ = camera_target_strz_dim;
-            rl.DrawTextEx(font, @ptrCast([*c]const u8, camera_pos_strz), rl.Vector2{ .x = 0, .y = fps_strz_dim.y + camera_pos_strz_dim.y }, font_size, font_spacing, rl.WHITE);
+            var target_block_point_strz = try std.fmt.bufPrintZ(&strz_buffer, "No collision", .{});
+            var target_block_point_strz_dim = rl.MeasureTextEx(font, @ptrCast([*c]const u8, target_block_point_strz), font_size, font_spacing);
+            if (target_block_collision.hit) {
+                target_block_point_strz = try std.fmt.bufPrintZ(&strz_buffer, "Block target point: (x:{d:.2}, y:{d:.2}, z:{d:.2})", .{ target_block_collision.point.x, target_block_collision.point.y, target_block_collision.point.z });
+                _ = target_block_point_strz_dim;
+            }
+            rl.DrawTextEx(font, @ptrCast([*c]const u8, target_block_point_strz), rl.Vector2{ .x = 0, .y = fps_strz_dim.y + camera_pos_strz_dim.y }, font_size, font_spacing, rl.WHITE);
         }
 
         rl.EndDrawing();
@@ -222,6 +258,6 @@ fn DrawCubeTexture(top_texture: rl.Texture2D, not_top_texture: rl.Texture2D, pos
     rlgl.TexCoord2f(0.0, 1.0);
     rlgl.Vertex3f(x - width / 2, y + height / 2, z - length / 2); // Top Left Of The Texture and Quad
 
-    rlgl.End();
     rlgl.SetTexture(0);
+    rlgl.End();
 }
