@@ -18,12 +18,28 @@
  "tileheight":128,
  "tiles":[
         {
+         "id":16,
+         "type":"bones_top"
+        }, 
+        {
          "id":78,
          "type":"default_dirt"
         }, 
         {
          "id":92,
          "type":"default_grass"
+        }, 
+        {
+         "id":143,
+         "type":"default_silver_sandstone"
+        }, 
+        {
+         "id":202,
+         "type":"farming_soil"
+        }, 
+        {
+         "id":242,
+         "type":"wieldhand"
         }],
  "tilewidth":128,
  "type":"tileset",

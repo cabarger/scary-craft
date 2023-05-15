@@ -11,7 +11,6 @@ const hashString = std.hash_map.hashString;
 
 // TODO(caleb):
 // -----------------------------------------------------------------------------------
-// Pack textures into an atlas
 // Lighting see learnopengl tutorial
 // Build a toy map in a voxel editor and import it
 // Player collision volume
@@ -41,6 +40,32 @@ const SpriteSheet = struct {
     texture: rl.Texture,
     name_to_id: AutoHashMap(u64, u16),
 };
+
+const Light = struct {
+    enabled: c_int,
+    type: c_int,
+    position: [3]f32,
+    target: [3]f32,
+    color: [4]f32,
+
+    enabled_loc: c_int,
+    type_loc: c_int,
+    position_loc: c_int,
+    target_loc: c_int,
+    color_loc: c_int,
+};
+
+fn updateLightValues(shader: rl.Shader, light: *Light) void {
+
+    // Send to shader light enabled state and type
+    rl.SetShaderValue(shader, light.enabled_loc, &light.enabled, @enumToInt(rl.ShaderUniformDataType.SHADER_UNIFORM_INT));
+    rl.SetShaderValue(shader, light.type_loc, &light.type, @enumToInt(rl.ShaderUniformDataType.SHADER_UNIFORM_INT));
+
+    // Send to shader light position, target, and color values
+    rl.SetShaderValue(shader, light.position_loc, &light.position, @enumToInt(rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3));
+    rl.SetShaderValue(shader, light.target_loc, &light.target, @enumToInt(rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3));
+    rl.SetShaderValue(shader, light.color_loc, &light.color, @enumToInt(rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4));
+}
 
 inline fn denseMapLookup(dense_map: []i16, x: i16, y: i16, z: i16) ?i16 {
     const map_width = @floatToInt(u16, chunk_dim.x);
@@ -238,8 +263,8 @@ fn stupidMesh(ally: *Allocator, sprite_sheet: *SpriteSheet) !rl.Mesh {
 pub fn main() !void {
     const screen_width: c_int = 1600;
     const screen_height: c_int = 900;
-
     rl.InitWindow(screen_width, screen_height, "Scary Craft");
+    rl.SetConfigFlags(rl.ConfigFlags.FLAG_MSAA_4X_HINT);
     rl.SetWindowState(rl.ConfigFlags.FLAG_WINDOW_RESIZABLE);
     rl.SetTargetFPS(target_fps);
     rl.DisableCursor();
@@ -247,16 +272,6 @@ pub fn main() !void {
     var ally = std.heap.page_allocator;
 
     const font = rl.LoadFont("data/FiraCode-Medium.ttf");
-
-    var debug_axes = false;
-    var debug_text_info = false;
-
-    var camera: rl.Camera = undefined;
-    camera.position = rl.Vector3{ .x = 0.0, .y = 10.0, .z = 10.0 };
-    camera.target = rl.Vector3{ .x = 0.0, .y = 0.0, .z = -1.0 };
-    camera.up = rl.Vector3{ .x = 0.0, .y = 1.0, .z = 0.0 };
-    camera.fovy = 60.0;
-    camera.projection = rl.CameraProjection.CAMERA_PERSPECTIVE;
 
     var sprite_sheet: SpriteSheet = undefined;
     sprite_sheet.texture = rl.LoadTexture("data/atlas.png");
@@ -282,8 +297,35 @@ pub fn main() !void {
             try sprite_sheet.name_to_id.put(hashString(tile_type.String), @intCast(u16, tile_id.Integer));
         }
     }
+
+    var shader: rl.Shader = rl.LoadShader(rl.TextFormat("data/shaders/lighting.vs", @intCast(c_int, 330)), rl.TextFormat("data/shaders/lighting.fs", @intCast(c_int, 330)));
+    shader.locs[@enumToInt(rl.ShaderLocationIndex.SHADER_LOC_VECTOR_VIEW)] = rl.GetShaderLocation(shader, "viewPos");
+
+    const ambient_loc = rl.GetShaderLocation(shader, "ambient");
+    rl.SetShaderValue(shader, ambient_loc, &[_]f32{ 0.001, 0.001, 0.001, 1.0 }, @enumToInt(rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4));
+
+    var light_source: Light = undefined;
+    // NOTE(caleb): Lighting shader naming must be the provided ones
+    light_source.enabled_loc = rl.GetShaderLocation(shader, "light.enabled");
+    light_source.type_loc = rl.GetShaderLocation(shader, "light.type");
+    light_source.position_loc = rl.GetShaderLocation(shader, "light.position");
+    light_source.target_loc = rl.GetShaderLocation(shader, "light.target");
+    light_source.color_loc = rl.GetShaderLocation(shader, "light.color");
+    light_source.color = [4]f32{ 1, 1, 1, 1 };
+
     var default_material = rl.LoadMaterialDefault();
+    default_material.shader = shader;
     rl.SetMaterialTexture(&default_material, @enumToInt(rl.MATERIAL_MAP_DIFFUSE), sprite_sheet.texture);
+
+    var debug_axes = false;
+    var debug_text_info = false;
+
+    var camera: rl.Camera = undefined;
+    camera.position = rl.Vector3{ .x = 0.0, .y = 10.0, .z = 10.0 };
+    camera.target = rl.Vector3{ .x = 0.0, .y = 0.0, .z = -1.0 };
+    camera.up = rl.Vector3{ .x = 0.0, .y = 1.0, .z = 0.0 };
+    camera.fovy = 60.0;
+    camera.projection = rl.CameraProjection.CAMERA_PERSPECTIVE;
 
     // Debug chunk slice 16x16 at y = 0;
     var dense_map = try ally.alloc(i16, @floatToInt(i16, chunk_dim.x * chunk_dim.y * chunk_dim.z));
@@ -298,7 +340,7 @@ pub fn main() !void {
         }
     }
 
-    // This will would occur on geo. changes.
+    // NOTE(caleb): This will need to happen every time block geo. is changed.
     var chunk_mesh = try stupidMesh(&ally, &sprite_sheet);
 
     while (!rl.WindowShouldClose()) {
@@ -336,6 +378,14 @@ pub fn main() !void {
         }
 
         rl.UpdateCameraPro(&camera, camera_move, rl.Vector3{ .x = rl.GetMouseDelta().x * mouse_sens, .y = rl.GetMouseDelta().y * mouse_sens, .z = 0 }, 0); //rl.GetMouseWheelMove());
+
+        // Update uniform shader values.
+        const camera_position = [3]f32{ camera.position.x, camera.position.y, camera.position.z };
+        const camera_target = [3]f32{ camera.target.x, camera.target.y, camera.target.z };
+        light_source.position = camera_position;
+        light_source.target = camera_target;
+        updateLightValues(shader, &light_source);
+        rl.SetShaderValue(shader, shader.locs[@enumToInt(rl.ShaderLocationIndex.SHADER_LOC_VECTOR_VIEW)], &camera_position, @enumToInt(rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3));
 
         const crosshair_ray = rl.Ray{ .position = camera.position, .direction = rl.GetCameraForward(&camera) };
         const crosshair_ray_collision = rl.GetRayCollisionMesh(crosshair_ray, chunk_mesh, rl.MatrixIdentity());
