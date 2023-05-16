@@ -11,7 +11,6 @@ const hashString = std.hash_map.hashString;
 
 // TODO(caleb):
 // -----------------------------------------------------------------------------------
-// Lighting see learnopengl tutorial
 // Build a toy map in a voxel editor and import it
 // Player collision volume
 // Gravity/Jump
@@ -302,7 +301,7 @@ pub fn main() !void {
     shader.locs[@enumToInt(rl.ShaderLocationIndex.SHADER_LOC_VECTOR_VIEW)] = rl.GetShaderLocation(shader, "viewPos");
 
     const ambient_loc = rl.GetShaderLocation(shader, "ambient");
-    rl.SetShaderValue(shader, ambient_loc, &[_]f32{ 0.001, 0.001, 0.001, 1.0 }, @enumToInt(rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4));
+    rl.SetShaderValue(shader, ambient_loc, &[_]f32{ 0.01, 0.01, 0.01, 1.0 }, @enumToInt(rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4));
 
     var light_source: Light = undefined;
     // NOTE(caleb): Lighting shader naming must be the provided ones
