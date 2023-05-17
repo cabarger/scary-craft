@@ -11,7 +11,7 @@ const hashString = std.hash_map.hashString;
 
 // TODO(caleb):
 // -----------------------------------------------------------------------------------
-// Build a toy map in a voxel editor and import it
+// World space coords to chunk space coords function
 // Player collision volume
 // Gravity/Jump
 
@@ -19,7 +19,7 @@ const hashString = std.hash_map.hashString;
 // INSERT SCARY ENEMY IDEAS HERE...
 
 const block_dim = rl.Vector3{ .x = 1, .y = 1, .z = 1 };
-const chunk_dim = rl.Vector3{ .x = 16, .y = 1, .z = 16 };
+const chunk_dim = rl.Vector3{ .x = 16, .y = 16, .z = 16 };
 
 const crosshair_thickness_in_pixels = 2;
 const crosshair_length_in_pixels = 20;
@@ -54,6 +54,15 @@ const Light = struct {
     color_loc: c_int,
 };
 
+const Direction = enum(u8) {
+    up = 1 << 0,
+    down = 1 << 1,
+    right = 1 << 2,
+    left = 1 << 3,
+    forward = 1 << 4,
+    backward = 1 << 5,
+};
+
 fn updateLightValues(shader: rl.Shader, light: *Light) void {
 
     // Send to shader light enabled state and type
@@ -64,6 +73,12 @@ fn updateLightValues(shader: rl.Shader, light: *Light) void {
     rl.SetShaderValue(shader, light.position_loc, &light.position, @enumToInt(rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3));
     rl.SetShaderValue(shader, light.target_loc, &light.target, @enumToInt(rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3));
     rl.SetShaderValue(shader, light.color_loc, &light.color, @enumToInt(rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4));
+}
+
+inline fn denseMapPut(dense_map: []i16, val: i16, x: i16, y: i16, z: i16) void {
+    const map_width = @floatToInt(u16, chunk_dim.x);
+    const map_height = @floatToInt(u16, chunk_dim.y);
+    dense_map[map_width * map_height * @intCast(u16, z) + @intCast(u16, y) * map_width + @intCast(u16, x)] = val;
 }
 
 inline fn denseMapLookup(dense_map: []i16, x: i16, y: i16, z: i16) ?i16 {
@@ -92,7 +107,7 @@ fn blockCoordsFromPoint(dense_map: []i16, p: rl.Vector3) rl.Vector3 {
     } else if (std.math.approxEqRel(f32, @floor(p.z), p.z, std.math.sqrt(std.math.floatEps(f32)))) {
         return rl.Vector3{ .x = @intToFloat(f32, block_x), .y = @intToFloat(f32, block_y), .z = @intToFloat(f32, block_z - 1) };
     }
-    unreachable;
+    unreachable; // FIXME(caleb): This is still reachable :(
 }
 
 inline fn setNormal3f(normals: []f32, normals_offset: *u32, x: f32, y: f32, z: f32) void {
@@ -121,13 +136,43 @@ inline fn setVertex3f(verticies: []f32, verticies_offset: *u32, x: f32, y: f32, 
     verticies_offset.* += 3;
 }
 
-/// Generate chunk sized mesh starting at world origin.
-fn stupidMesh(ally: *Allocator, sprite_sheet: *SpriteSheet) !rl.Mesh {
-    var result = std.mem.zeroes(rl.Mesh);
-    result.triangleCount = 2 * 6 * @floatToInt(c_int, chunk_dim.x) * @floatToInt(c_int, chunk_dim.y) * @floatToInt(c_int, chunk_dim.z);
-    result.vertexCount = 3 * result.triangleCount;
+inline fn solidBlock(dense_map: []i16, x: i16, y: i16, z: i16) bool {
+    var result = false;
+    if (denseMapLookup(dense_map, x, y, z)) |block| {
+        if (block == 1)
+            result = true;
+    }
+    return result;
+}
 
-    var normals = try ally.alloc(f32, @intCast(u32, result.vertexCount * 3));
+/// Generate chunk sized mesh starting at world origin.
+fn cullMesh(ally: Allocator, dense_map: []i16, sprite_sheet: *SpriteSheet) !rl.Mesh {
+    var result = std.mem.zeroes(rl.Mesh);
+    var face_count: c_int = 0;
+    {
+        var block_y: f32 = 0;
+        while (block_y < chunk_dim.y) : (block_y += 1) {
+            var block_z: f32 = 0;
+            while (block_z < chunk_dim.z) : (block_z += 1) {
+                var block_x: f32 = 0;
+                while (block_x < chunk_dim.x) : (block_x += 1) {
+                    const curr_block = denseMapLookup(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y), @floatToInt(i16, block_z)) orelse unreachable;
+                    if (curr_block == 0)
+                        continue;
+                    face_count += if (!solidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y + 1), @floatToInt(i16, block_z))) 1 else 0; // Top face
+                    face_count += if (!solidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y - 1), @floatToInt(i16, block_z))) 1 else 0; // Bottom face
+                    face_count += if (!solidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y), @floatToInt(i16, block_z + 1))) 1 else 0; // Front face
+                    face_count += if (!solidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y), @floatToInt(i16, block_z - 1))) 1 else 0; // Back face
+                    face_count += if (!solidBlock(dense_map, @floatToInt(i16, block_x + 1), @floatToInt(i16, block_y), @floatToInt(i16, block_z))) 1 else 0; // Right face
+                    face_count += if (!solidBlock(dense_map, @floatToInt(i16, block_x - 1), @floatToInt(i16, block_y), @floatToInt(i16, block_z))) 1 else 0; // Left face
+                }
+            }
+        }
+    }
+
+    result.triangleCount = face_count * 2; // 3 floats per vertex, 3 verticies per triangle
+    result.vertexCount = result.triangleCount * 3;
+    var normals = try ally.alloc(f32, @intCast(u32, result.vertexCount * 3)); // ArrayList?:
     var texcoords = try ally.alloc(f32, @intCast(u32, result.vertexCount * 2));
     var verticies = try ally.alloc(f32, @intCast(u32, result.vertexCount * 3));
     var normals_offset: u32 = 0;
@@ -151,112 +196,163 @@ fn stupidMesh(ally: *Allocator, sprite_sheet: *SpriteSheet) !rl.Mesh {
     const dirt_texcoord_start_y = 128 * @intToFloat(f32, dirt_tile_row) / @intToFloat(f32, sprite_sheet.texture.height);
     const dirt_texcoord_end_y = dirt_texcoord_start_y + 128 / @intToFloat(f32, sprite_sheet.texture.height);
 
-    var block_z: f32 = 0;
-    while (block_z < chunk_dim.z) : (block_z += 1) {
+    {
         var block_y: f32 = 0;
         while (block_y < chunk_dim.y) : (block_y += 1) {
-            var block_x: f32 = 0;
-            while (block_x < chunk_dim.x) : (block_x += 1) {
+            var block_z: f32 = 0;
+            while (block_z < chunk_dim.z) : (block_z += 1) {
+                var block_x: f32 = 0;
+                while (block_x < chunk_dim.x) : (block_x += 1) {
+                    const curr_block = denseMapLookup(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y), @floatToInt(i16, block_z)) orelse unreachable;
+                    if (curr_block == 0) // No block here so don't worry about writing mesh data
+                        continue;
 
-                // Top face
-                setFaceNormals(normals, &normals_offset, 0, 1, 0); // Normals pointing up
-                setTexcoord2f(texcoords, &texcoords_offset, grass_texcoord_start_x, grass_texcoord_end_y);
-                setVertex3f(verticies, &verticies_offset, block_x, block_y + block_dim.y, block_z + block_dim.z); // Bottom left texture and vertex
-                setTexcoord2f(texcoords, &texcoords_offset, grass_texcoord_end_x, grass_texcoord_start_y);
-                setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y + block_dim.y, block_z); // Top right texture and vertex
-                setTexcoord2f(texcoords, &texcoords_offset, grass_texcoord_start_x, grass_texcoord_start_y);
-                setVertex3f(verticies, &verticies_offset, block_x, block_y + block_dim.y, block_z); // Top left texture and vertex.
-                setTexcoord2f(texcoords, &texcoords_offset, grass_texcoord_start_x, grass_texcoord_end_y);
-                setVertex3f(verticies, &verticies_offset, block_x, block_y + block_dim.y, block_z + block_dim.z); // Bottom left texture and vertex
-                setTexcoord2f(texcoords, &texcoords_offset, grass_texcoord_end_x, grass_texcoord_end_y);
-                setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y + block_dim.y, block_z + block_dim.z); // Bottom right texture and vertex.
-                setTexcoord2f(texcoords, &texcoords_offset, grass_texcoord_end_x, grass_texcoord_start_y);
-                setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y + block_dim.y, block_z); // Top right texture and vertex
+                    // Top Face
+                    if (!solidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y + 1), @floatToInt(i16, block_z))) {
+                        setFaceNormals(normals, &normals_offset, 0, 1, 0); // Normals pointing up
+                        setTexcoord2f(texcoords, &texcoords_offset, grass_texcoord_start_x, grass_texcoord_end_y);
+                        setVertex3f(verticies, &verticies_offset, block_x, block_y + block_dim.y, block_z + block_dim.z); // Bottom left texture and vertex
+                        setTexcoord2f(texcoords, &texcoords_offset, grass_texcoord_end_x, grass_texcoord_start_y);
+                        setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y + block_dim.y, block_z); // Top right texture and vertex
+                        setTexcoord2f(texcoords, &texcoords_offset, grass_texcoord_start_x, grass_texcoord_start_y);
+                        setVertex3f(verticies, &verticies_offset, block_x, block_y + block_dim.y, block_z); // Top left texture and vertex.
+                        setTexcoord2f(texcoords, &texcoords_offset, grass_texcoord_start_x, grass_texcoord_end_y);
+                        setVertex3f(verticies, &verticies_offset, block_x, block_y + block_dim.y, block_z + block_dim.z); // Bottom left texture and vertex
+                        setTexcoord2f(texcoords, &texcoords_offset, grass_texcoord_end_x, grass_texcoord_end_y);
+                        setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y + block_dim.y, block_z + block_dim.z); // Bottom right texture and vertex.
+                        setTexcoord2f(texcoords, &texcoords_offset, grass_texcoord_end_x, grass_texcoord_start_y);
+                        setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y + block_dim.y, block_z); // Top right texture and vertex
+                    }
 
-                // Front face
-                setFaceNormals(normals, &normals_offset, 0, 0, 1); // Normals pointing towards viewer
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
-                setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z + block_dim.z); // Bottom left texture and vertex
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
-                setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y + block_dim.y, block_z + block_dim.z); // Top right texture and vertex
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_start_y);
-                setVertex3f(verticies, &verticies_offset, block_x, block_y + block_dim.y, block_z + block_dim.z); // Top left texture and vertex.
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
-                setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z + block_dim.z); // Bottom left texture and vertex
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_end_y);
-                setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y, block_z + block_dim.z); // Bottom right texture and vertex
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
-                setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y + block_dim.y, block_z + block_dim.z); // Top right texture and vertex
+                    // Front face
+                    if (!solidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y), @floatToInt(i16, block_z + 1))) {
+                        setFaceNormals(normals, &normals_offset, 0, 0, 1); // Normals pointing towards viewer
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
+                        setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z + block_dim.z); // Bottom left texture and vertex
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
+                        setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y + block_dim.y, block_z + block_dim.z); // Top right texture and vertex
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_start_y);
+                        setVertex3f(verticies, &verticies_offset, block_x, block_y + block_dim.y, block_z + block_dim.z); // Top left texture and vertex.
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
+                        setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z + block_dim.z); // Bottom left texture and vertex
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_end_y);
+                        setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y, block_z + block_dim.z); // Bottom right texture and vertex
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
+                        setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y + block_dim.y, block_z + block_dim.z); // Top right texture and vertex
+                    }
 
-                // Back face
-                setFaceNormals(normals, &normals_offset, 0, 0, -1); // Normals pointing away from viewer
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
-                setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y, block_z); // Bottom left texture and vertex
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
-                setVertex3f(verticies, &verticies_offset, block_x, block_y + block_dim.y, block_z); // Top right texture and vertex
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_start_y);
-                setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y + block_dim.y, block_z); // Top left texture and vertex.
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
-                setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y, block_z); // Bottom left texture and vertex
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_end_y);
-                setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z); // Bottom right texture and vertex
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
-                setVertex3f(verticies, &verticies_offset, block_x, block_y + block_dim.y, block_z); // Top right texture and vertex
+                    // Back face
+                    if (!solidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y), @floatToInt(i16, block_z - 1))) {
+                        setFaceNormals(normals, &normals_offset, 0, 0, -1); // Normals pointing away from viewer
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
+                        setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y, block_z); // Bottom left texture and vertex
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
+                        setVertex3f(verticies, &verticies_offset, block_x, block_y + block_dim.y, block_z); // Top right texture and vertex
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_start_y);
+                        setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y + block_dim.y, block_z); // Top left texture and vertex.
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
+                        setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y, block_z); // Bottom left texture and vertex
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_end_y);
+                        setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z); // Bottom right texture and vertex
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
+                        setVertex3f(verticies, &verticies_offset, block_x, block_y + block_dim.y, block_z); // Top right texture and vertex
+                    }
 
-                // Bottom face
-                setFaceNormals(normals, &normals_offset, 0, -1, 0); // Normals pointing away from viewer
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
-                setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z); // Bottom left texture and vertex
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
-                setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y, block_z + block_dim.z); // Top right texture and vertex
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_start_y);
-                setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z + block_dim.z); // Top left texture and vertex.
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
-                setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z); // Bottom left texture and vertex
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_end_y);
-                setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y, block_z); // Bottom right texture and vertex
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
-                setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y, block_z + block_dim.z); // Top right texture and vertex
+                    // Bottom face
+                    if (!solidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y - 1), @floatToInt(i16, block_z))) {
+                        setFaceNormals(normals, &normals_offset, 0.0, -1.0, 0.0); // Normals pointing down
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
+                        setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z); // Bottom left texture and vertex
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
+                        setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y, block_z + block_dim.z); // Top right texture and vertex
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_start_y);
+                        setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z + block_dim.z); // Top left texture and vertex.
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
+                        setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z); // Bottom left texture and vertex
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_end_y);
+                        setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y, block_z); // Bottom right texture and vertex
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
+                        setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y, block_z + block_dim.z); // Top right texture and vertex
+                    }
 
-                // Right face
-                setFaceNormals(normals, &normals_offset, 1.0, 0.0, 0.0); // Normals Pointing Right
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
-                setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y, block_z + block_dim.z); // Bottom left of the texture and vertex
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
-                setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y + block_dim.y, block_z); // Top right of the texture and vertex
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_start_y);
-                setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y + block_dim.y, block_z + block_dim.z); // Top left of the texture and vertex
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
-                setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y, block_z + block_dim.z); // Bottom left of the texture and vertex
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_end_y);
-                setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y, block_z); // Bottom right of the texture and vertex
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
-                setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y + block_dim.y, block_z); // Top right of the texture and vertex
+                    // Right face
+                    if (!solidBlock(dense_map, @floatToInt(i16, block_x + 1), @floatToInt(i16, block_y), @floatToInt(i16, block_z))) {
+                        setFaceNormals(normals, &normals_offset, 1.0, 0.0, 0.0); // Normals pointing right
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
+                        setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y, block_z + block_dim.z); // Bottom left of the texture and vertex
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
+                        setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y + block_dim.y, block_z); // Top right of the texture and vertex
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_start_y);
+                        setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y + block_dim.y, block_z + block_dim.z); // Top left of the texture and vertex
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
+                        setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y, block_z + block_dim.z); // Bottom left of the texture and vertex
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_end_y);
+                        setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y, block_z); // Bottom right of the texture and vertex
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
+                        setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y + block_dim.y, block_z); // Top right of the texture and vertex
+                    }
 
-                // Left Face
-                setFaceNormals(normals, &normals_offset, -1.0, 0.0, 0.0); // Normals Pointing Left
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
-                setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z); // Bottom left of the texture and texture
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
-                setVertex3f(verticies, &verticies_offset, block_x, block_y + block_dim.y, block_z + block_dim.z); // Top right of the texture and texture
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_start_y);
-                setVertex3f(verticies, &verticies_offset, block_x, block_y + block_dim.y, block_z); // Top left of the texture and texture
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
-                setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z); // Bottom left of the texture and texture
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_end_y);
-                setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z + block_dim.z); // Bottom right of the texture and texture
-                setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
-                setVertex3f(verticies, &verticies_offset, block_x, block_y + block_dim.y, block_z + block_dim.z); // Top right of the texture and texture
+                    // Left Face
+                    if (!solidBlock(dense_map, @floatToInt(i16, block_x - 1), @floatToInt(i16, block_y), @floatToInt(i16, block_z))) {
+                        setFaceNormals(normals, &normals_offset, -1.0, 0.0, 0.0); // Normals Pointing Left
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
+                        setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z); // Bottom left of the texture and texture
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
+                        setVertex3f(verticies, &verticies_offset, block_x, block_y + block_dim.y, block_z + block_dim.z); // Top right of the texture and texture
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_start_y);
+                        setVertex3f(verticies, &verticies_offset, block_x, block_y + block_dim.y, block_z); // Top left of the texture and texture
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
+                        setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z); // Bottom left of the texture and texture
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_end_y);
+                        setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z + block_dim.z); // Bottom right of the texture and texture
+                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
+                        setVertex3f(verticies, &verticies_offset, block_x, block_y + block_dim.y, block_z + block_dim.z); // Top right of the texture and texture
+                    }
+                }
             }
         }
     }
+
     result.normals = @ptrCast([*c]f32, normals);
     result.texcoords = @ptrCast([*c]f32, texcoords);
     result.vertices = @ptrCast([*c]f32, verticies);
 
-    rl.UploadMesh(&result, false);
-
     return result;
+}
+
+inline fn lookDirection(direction: rl.Vector3) Direction {
+    var look_direction: Direction = undefined;
+
+    const up_dot = rl.Vector3DotProduct(direction, rl.Vector3{ .x = 0, .y = 1, .z = 0 });
+    const down_dot = rl.Vector3DotProduct(direction, rl.Vector3{ .x = 0, .y = -1, .z = 0 });
+    const right_dot = rl.Vector3DotProduct(direction, rl.Vector3{ .x = 1, .y = 0, .z = 0 });
+    const left_dot = rl.Vector3DotProduct(direction, rl.Vector3{ .x = -1, .y = 0, .z = 0 });
+    const forward_dot = rl.Vector3DotProduct(direction, rl.Vector3{ .x = 0, .y = 0, .z = -1 });
+    const backward_dot = rl.Vector3DotProduct(direction, rl.Vector3{ .x = 0, .y = 0, .z = 1 });
+
+    look_direction = Direction.up;
+    var closest_look_dot = up_dot;
+    if (down_dot > closest_look_dot) {
+        look_direction = Direction.down;
+        closest_look_dot = down_dot;
+    }
+    if (right_dot > closest_look_dot) {
+        look_direction = Direction.right;
+        closest_look_dot = right_dot;
+    }
+    if (left_dot > closest_look_dot) {
+        look_direction = Direction.left;
+        closest_look_dot = left_dot;
+    }
+    if (forward_dot > closest_look_dot) {
+        look_direction = Direction.forward;
+        closest_look_dot = forward_dot;
+    }
+    if (backward_dot > closest_look_dot) {
+        look_direction = Direction.backward;
+    }
+
+    return look_direction;
 }
 
 pub fn main() !void {
@@ -268,22 +364,26 @@ pub fn main() !void {
     rl.SetTargetFPS(target_fps);
     rl.DisableCursor();
 
-    var ally = std.heap.page_allocator;
+    var page_ally = std.heap.page_allocator;
+    var back_buffer = try page_ally.alloc(u8, 1024 * 1024 * 5); // 5mb
+    var fb_ally = std.heap.FixedBufferAllocator.init(back_buffer);
+    var arena_ally = std.heap.ArenaAllocator.init(fb_ally.allocator());
 
     const font = rl.LoadFont("data/FiraCode-Medium.ttf");
 
     var sprite_sheet: SpriteSheet = undefined;
     sprite_sheet.texture = rl.LoadTexture("data/atlas.png");
-    sprite_sheet.name_to_id = AutoHashMap(u64, u16).init(ally);
+    sprite_sheet.name_to_id = AutoHashMap(u64, u16).init(arena_ally.allocator());
     {
-        var parser = std.json.Parser.init(ally, false);
-        defer parser.deinit();
+        var tmp_arena_state = arena_ally.state;
+        defer arena_ally = tmp_arena_state.promote(fb_ally.allocator());
+
+        var parser = std.json.Parser.init(arena_ally.allocator(), false);
 
         const atlas_data_file = try std.fs.cwd().openFile("data/atlas_data.json", .{});
         defer atlas_data_file.close();
 
-        var raw_atlas_json = try atlas_data_file.reader().readAllAlloc(ally, 1024 * 5); // 5kib should be enough
-        defer ally.free(raw_atlas_json);
+        var raw_atlas_json = try atlas_data_file.reader().readAllAlloc(arena_ally.allocator(), 1024 * 2); // 2kib should be enough
 
         var parsed_atlas_data = try parser.parse(raw_atlas_json);
         const columns_value = parsed_atlas_data.root.Object.get("columns") orelse unreachable;
@@ -327,7 +427,7 @@ pub fn main() !void {
     camera.projection = rl.CameraProjection.CAMERA_PERSPECTIVE;
 
     // Debug chunk slice 16x16 at y = 0;
-    var dense_map = try ally.alloc(i16, @floatToInt(i16, chunk_dim.x * chunk_dim.y * chunk_dim.z));
+    var dense_map = try arena_ally.allocator().alloc(i16, @floatToInt(i16, chunk_dim.x * chunk_dim.y * chunk_dim.z));
     for (dense_map) |*item|
         item.* = 0;
 
@@ -339,8 +439,11 @@ pub fn main() !void {
         }
     }
 
-    // NOTE(caleb): This will need to happen every time block geo. is changed.
-    var chunk_mesh = try stupidMesh(&ally, &sprite_sheet);
+    // Initial chunk mesh
+    var tmp_arena_state = arena_ally.state;
+    var chunk_mesh = try cullMesh(arena_ally.allocator(), dense_map, &sprite_sheet);
+    rl.UploadMesh(&chunk_mesh, false);
+    arena_ally = tmp_arena_state.promote(fb_ally.allocator());
 
     while (!rl.WindowShouldClose()) {
         const screen_dim = rl.Vector2{ .x = @intToFloat(f32, rl.GetScreenWidth()), .y = @intToFloat(f32, rl.GetScreenHeight()) };
@@ -388,10 +491,25 @@ pub fn main() !void {
 
         const crosshair_ray = rl.Ray{ .position = camera.position, .direction = rl.GetCameraForward(&camera) };
         const crosshair_ray_collision = rl.GetRayCollisionMesh(crosshair_ray, chunk_mesh, rl.MatrixIdentity());
+        const look_direction = lookDirection(crosshair_ray.direction);
 
         var target_block_coords: rl.Vector3 = undefined;
         if (crosshair_ray_collision.hit) {
             target_block_coords = blockCoordsFromPoint(dense_map, crosshair_ray_collision.point);
+
+            // Was left mouse pressed?
+
+            if (rl.IsMouseButtonPressed(rl.MouseButton.MOUSE_BUTTON_LEFT)) { // Break block
+                denseMapPut(dense_map, 0, @floatToInt(i16, target_block_coords.x), @floatToInt(i16, target_block_coords.y), @floatToInt(i16, target_block_coords.z));
+
+                // Update chunk mesh
+                tmp_arena_state = arena_ally.state;
+                defer arena_ally = tmp_arena_state.promote(fb_ally.allocator());
+
+                //  rl.UnloadMesh(chunk_mesh);
+                chunk_mesh = try cullMesh(arena_ally.allocator(), dense_map, &sprite_sheet);
+                rl.UploadMesh(&chunk_mesh, false);
+            }
         }
 
         rl.BeginDrawing();
@@ -399,7 +517,7 @@ pub fn main() !void {
         rl.BeginMode3D(camera);
 
         rl.DrawMesh(chunk_mesh, default_material, rl.MatrixIdentity());
-        rl.DrawGrid(10, 1);
+        // rl.DrawGrid(10, 1);
 
         rl.EndMode3D();
 
@@ -422,9 +540,14 @@ pub fn main() !void {
             var target_block_point_strz_dim = rl.MeasureTextEx(font, @ptrCast([*c]const u8, target_block_point_strz), font_size, font_spacing);
             if (crosshair_ray_collision.hit) {
                 target_block_point_strz = try std.fmt.bufPrintZ(&strz_buffer, "Target block: (x:{d:.2}, y:{d:.2}, z:{d:.2})", .{ target_block_coords.x, target_block_coords.y, target_block_coords.z });
-                _ = target_block_point_strz_dim;
+                target_block_point_strz_dim = rl.MeasureTextEx(font, @ptrCast([*c]const u8, target_block_point_strz), font_size, font_spacing);
             }
             rl.DrawTextEx(font, @ptrCast([*c]const u8, target_block_point_strz), rl.Vector2{ .x = 0, .y = fps_strz_dim.y + camera_pos_strz_dim.y }, font_size, font_spacing, rl.WHITE);
+
+            const look_direction_strz = try std.fmt.bufPrintZ(&strz_buffer, "Look direction: {s}", .{@tagName(look_direction)});
+            const look_direction_strz_dim = rl.MeasureTextEx(font, @ptrCast([*c]const u8, look_direction_strz), font_size, font_spacing);
+            _ = look_direction_strz_dim;
+            rl.DrawTextEx(font, @ptrCast([*c]const u8, look_direction_strz), rl.Vector2{ .x = 0, .y = fps_strz_dim.y + camera_pos_strz_dim.y + target_block_point_strz_dim.y }, font_size, font_spacing, rl.WHITE);
         }
 
         rl.EndDrawing();
