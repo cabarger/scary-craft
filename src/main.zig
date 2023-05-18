@@ -1,10 +1,16 @@
 const std = @import("std");
-const rl = @import("raylib.zig");
-const rlgl = rl.rlgl;
+
+const c = @cImport({
+    @cInclude("raylib.h");
+    @cInclude("raymath.h");
+    @cInclude("rcamera.h");
+    @cInclude("rlgl.h");
+});
 
 const ArrayList = std.ArrayList;
 const AutoHashMap = std.AutoHashMap;
 const Allocator = std.mem.Allocator;
+const ArenaAllocator = std.heap.ArenaAllocator;
 const FixedBufferAllocator = std.heap.FixedBufferAllocator;
 
 const hashString = std.hash_map.hashString;
@@ -18,8 +24,8 @@ const hashString = std.hash_map.hashString;
 // OBJECTIVES (possibly in the form of notes that you can pick up?)
 // INSERT SCARY ENEMY IDEAS HERE...
 
-const block_dim = rl.Vector3{ .x = 1, .y = 1, .z = 1 };
-const chunk_dim = rl.Vector3{ .x = 16, .y = 16, .z = 16 };
+const block_dim = c.Vector3{ .x = 1, .y = 1, .z = 1 };
+const chunk_dim = c.Vector3{ .x = 16, .y = 16, .z = 16 };
 
 const crosshair_thickness_in_pixels = 2;
 const crosshair_length_in_pixels = 20;
@@ -36,8 +42,28 @@ const target_fps = 60;
 
 const SpriteSheet = struct {
     columns: u16,
-    texture: rl.Texture,
+    texture: c.Texture,
     name_to_id: AutoHashMap(u64, u16),
+};
+
+// Axis aligned bounding box
+const AABB = struct {
+    pos: c.Vector3, // Bottom left
+    dim: c.Vector3,
+
+    pub inline fn getVP(this: *AABB, normal: c.Vector3) c.Vector3 {
+        var result = this.pos;
+        if (normal.x > 0) {
+            result.x += this.dim.x;
+        }
+        if (normal.y > 0) {
+            result.y += this.dim.y;
+        }
+        if (normal.z > 0) {
+            result.z += this.dim.z;
+        }
+        return result;
+    }
 };
 
 const Light = struct {
@@ -54,25 +80,38 @@ const Light = struct {
     color_loc: c_int,
 };
 
-const Direction = enum(u8) {
-    up = 1 << 0,
-    down = 1 << 1,
-    right = 1 << 2,
-    left = 1 << 3,
-    forward = 1 << 4,
-    backward = 1 << 5,
+const Direction = enum {
+    up,
+    down,
+    right,
+    left,
+    forward,
+    backward,
 };
 
-fn updateLightValues(shader: rl.Shader, light: *Light) void {
+/// Unload mesh from memory (RAM and VRAM)
+fn unloadMesh(mesh: c.Mesh) void {
+    // Unload rlgl mesh vboId data
+    c.rlUnloadVertexArray(mesh.vaoId);
+    if (mesh.vboId != null) {
+        var vertex_buffer_index: u8 = 0;
+        while (vertex_buffer_index < 7) : (vertex_buffer_index += 1) {
+            c.rlUnloadVertexBuffer(mesh.vboId[vertex_buffer_index]);
+        }
+    }
+    c.MemFree(mesh.vboId);
+}
+
+fn updateLightValues(shader: c.Shader, light: *Light) void {
 
     // Send to shader light enabled state and type
-    rl.SetShaderValue(shader, light.enabled_loc, &light.enabled, @enumToInt(rl.ShaderUniformDataType.SHADER_UNIFORM_INT));
-    rl.SetShaderValue(shader, light.type_loc, &light.type, @enumToInt(rl.ShaderUniformDataType.SHADER_UNIFORM_INT));
+    c.SetShaderValue(shader, light.enabled_loc, &light.enabled, c.SHADER_UNIFORM_INT);
+    c.SetShaderValue(shader, light.type_loc, &light.type, c.SHADER_UNIFORM_INT);
 
     // Send to shader light position, target, and color values
-    rl.SetShaderValue(shader, light.position_loc, &light.position, @enumToInt(rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3));
-    rl.SetShaderValue(shader, light.target_loc, &light.target, @enumToInt(rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3));
-    rl.SetShaderValue(shader, light.color_loc, &light.color, @enumToInt(rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4));
+    c.SetShaderValue(shader, light.position_loc, &light.position, c.SHADER_UNIFORM_VEC3);
+    c.SetShaderValue(shader, light.target_loc, &light.target, c.SHADER_UNIFORM_VEC3);
+    c.SetShaderValue(shader, light.color_loc, &light.color, c.SHADER_UNIFORM_VEC4);
 }
 
 inline fn denseMapPut(dense_map: []i16, val: i16, x: i16, y: i16, z: i16) void {
@@ -90,23 +129,25 @@ inline fn denseMapLookup(dense_map: []i16, x: i16, y: i16, z: i16) ?i16 {
     return dense_map[map_width * map_height * @intCast(u16, z) + @intCast(u16, y) * map_width + @intCast(u16, x)];
 }
 
-fn blockCoordsFromPoint(dense_map: []i16, p: rl.Vector3) rl.Vector3 {
+fn blockCoordsFromPoint(dense_map: []i16, p: c.Vector3) c.Vector3 {
     const block_x = @floatToInt(i16, p.x);
     const block_y = @floatToInt(i16, p.y);
     const block_z = @floatToInt(i16, p.z);
 
     const val = denseMapLookup(dense_map, block_x, block_y, block_z);
     if (val != null and val.? == 1)
-        return rl.Vector3{ .x = @intToFloat(f32, block_x), .y = @intToFloat(f32, block_y), .z = @intToFloat(f32, block_z) };
+        return c.Vector3{ .x = @intToFloat(f32, block_x), .y = @intToFloat(f32, block_y), .z = @intToFloat(f32, block_z) };
 
     // NOTE(caleb): sqrt(floatEps(f32)), meaning that the two numbers are considered equal if at least half of the digits are equal.
-    if (std.math.approxEqRel(f32, @floor(p.x), p.x, std.math.sqrt(std.math.floatEps(f32)))) {
-        return rl.Vector3{ .x = @intToFloat(f32, block_x - 1), .y = @intToFloat(f32, block_y), .z = @intToFloat(f32, block_z) };
-    } else if (std.math.approxEqRel(f32, @floor(p.y), p.y, std.math.sqrt(std.math.floatEps(f32)))) {
-        return rl.Vector3{ .x = @intToFloat(f32, block_x), .y = @intToFloat(f32, block_y - 1), .z = @intToFloat(f32, block_z) };
-    } else if (std.math.approxEqRel(f32, @floor(p.z), p.z, std.math.sqrt(std.math.floatEps(f32)))) {
-        return rl.Vector3{ .x = @intToFloat(f32, block_x), .y = @intToFloat(f32, block_y), .z = @intToFloat(f32, block_z - 1) };
+    if (std.math.approxEqRel(f32, @round(p.x), p.x, std.math.sqrt(std.math.floatEps(f32)))) {
+        return c.Vector3{ .x = @intToFloat(f32, block_x - 1), .y = @intToFloat(f32, block_y), .z = @intToFloat(f32, block_z) };
+    } else if (std.math.approxEqRel(f32, @round(p.y), p.y, std.math.sqrt(std.math.floatEps(f32)))) {
+        return c.Vector3{ .x = @intToFloat(f32, block_x), .y = @intToFloat(f32, block_y - 1), .z = @intToFloat(f32, block_z) };
+    } else if (std.math.approxEqRel(f32, @round(p.z), p.z, std.math.sqrt(std.math.floatEps(f32)))) {
+        return c.Vector3{ .x = @intToFloat(f32, block_x), .y = @intToFloat(f32, block_y), .z = @intToFloat(f32, block_z - 1) };
     }
+    std.debug.print("{d}, {d}, {d}\n", .{ @floor(p.x), p.y, p.z });
+    std.debug.print("{d}, {d}, {d}\n", .{ p.x, p.y, p.z });
     unreachable; // FIXME(caleb): This is still reachable :(
 }
 
@@ -146,8 +187,8 @@ inline fn solidBlock(dense_map: []i16, x: i16, y: i16, z: i16) bool {
 }
 
 /// Generate chunk sized mesh starting at world origin.
-fn cullMesh(ally: Allocator, dense_map: []i16, sprite_sheet: *SpriteSheet) !rl.Mesh {
-    var result = std.mem.zeroes(rl.Mesh);
+fn cullMesh(ally: Allocator, dense_map: []i16, sprite_sheet: *SpriteSheet) !c.Mesh {
+    var result = std.mem.zeroes(c.Mesh);
     var face_count: c_int = 0;
     {
         var block_y: f32 = 0;
@@ -170,11 +211,12 @@ fn cullMesh(ally: Allocator, dense_map: []i16, sprite_sheet: *SpriteSheet) !rl.M
         }
     }
 
-    result.triangleCount = face_count * 2; // 3 floats per vertex, 3 verticies per triangle
+    result.triangleCount = face_count * 2;
     result.vertexCount = result.triangleCount * 3;
-    var normals = try ally.alloc(f32, @intCast(u32, result.vertexCount * 3)); // ArrayList?:
+    var normals = try ally.alloc(f32, @intCast(u32, result.vertexCount * 3));
     var texcoords = try ally.alloc(f32, @intCast(u32, result.vertexCount * 2));
     var verticies = try ally.alloc(f32, @intCast(u32, result.vertexCount * 3));
+    std.debug.print("required bytes: {d}\n", .{normals.len * 3 + texcoords.len * 3 + verticies.len * 3});
     var normals_offset: u32 = 0;
     var texcoords_offset: u32 = 0;
     var verticies_offset: u32 = 0;
@@ -320,15 +362,15 @@ fn cullMesh(ally: Allocator, dense_map: []i16, sprite_sheet: *SpriteSheet) !rl.M
     return result;
 }
 
-inline fn lookDirection(direction: rl.Vector3) Direction {
+inline fn lookDirection(direction: c.Vector3) Direction {
     var look_direction: Direction = undefined;
 
-    const up_dot = rl.Vector3DotProduct(direction, rl.Vector3{ .x = 0, .y = 1, .z = 0 });
-    const down_dot = rl.Vector3DotProduct(direction, rl.Vector3{ .x = 0, .y = -1, .z = 0 });
-    const right_dot = rl.Vector3DotProduct(direction, rl.Vector3{ .x = 1, .y = 0, .z = 0 });
-    const left_dot = rl.Vector3DotProduct(direction, rl.Vector3{ .x = -1, .y = 0, .z = 0 });
-    const forward_dot = rl.Vector3DotProduct(direction, rl.Vector3{ .x = 0, .y = 0, .z = -1 });
-    const backward_dot = rl.Vector3DotProduct(direction, rl.Vector3{ .x = 0, .y = 0, .z = 1 });
+    const up_dot = c.Vector3DotProduct(direction, c.Vector3{ .x = 0, .y = 1, .z = 0 });
+    const down_dot = c.Vector3DotProduct(direction, c.Vector3{ .x = 0, .y = -1, .z = 0 });
+    const right_dot = c.Vector3DotProduct(direction, c.Vector3{ .x = 1, .y = 0, .z = 0 });
+    const left_dot = c.Vector3DotProduct(direction, c.Vector3{ .x = -1, .y = 0, .z = 0 });
+    const forward_dot = c.Vector3DotProduct(direction, c.Vector3{ .x = 0, .y = 0, .z = -1 });
+    const backward_dot = c.Vector3DotProduct(direction, c.Vector3{ .x = 0, .y = 0, .z = 1 });
 
     look_direction = Direction.up;
     var closest_look_dot = up_dot;
@@ -358,27 +400,27 @@ inline fn lookDirection(direction: rl.Vector3) Direction {
 pub fn main() !void {
     const screen_width: c_int = 1600;
     const screen_height: c_int = 900;
-    rl.InitWindow(screen_width, screen_height, "Scary Craft");
-    rl.SetConfigFlags(rl.ConfigFlags.FLAG_MSAA_4X_HINT);
-    rl.SetWindowState(rl.ConfigFlags.FLAG_WINDOW_RESIZABLE);
-    rl.SetTargetFPS(target_fps);
-    rl.DisableCursor();
+    c.InitWindow(screen_width, screen_height, "Scary Craft");
+    c.SetConfigFlags(c.FLAG_MSAA_4X_HINT);
+    c.SetWindowState(c.FLAG_WINDOW_RESIZABLE);
+    c.SetTargetFPS(target_fps);
+    c.DisableCursor();
 
     var page_ally = std.heap.page_allocator;
-    var back_buffer = try page_ally.alloc(u8, 1024 * 1024 * 5); // 5mb
+    var back_buffer = try page_ally.alloc(u8, 1024 * 1024 * 1); // 1mb
     var fb_ally = std.heap.FixedBufferAllocator.init(back_buffer);
     var arena_ally = std.heap.ArenaAllocator.init(fb_ally.allocator());
 
-    const font = rl.LoadFont("data/FiraCode-Medium.ttf");
+    const font = c.LoadFont("data/FiraCode-Medium.ttf");
 
     var sprite_sheet: SpriteSheet = undefined;
-    sprite_sheet.texture = rl.LoadTexture("data/atlas.png");
+    sprite_sheet.texture = c.LoadTexture("data/atlas.png");
     sprite_sheet.name_to_id = AutoHashMap(u64, u16).init(arena_ally.allocator());
     {
         var tmp_arena_state = arena_ally.state;
         defer arena_ally = tmp_arena_state.promote(fb_ally.allocator());
 
-        var parser = std.json.Parser.init(arena_ally.allocator(), false);
+        var parser = std.json.Parser.init(arena_ally.allocator(), std.json.AllocWhen.alloc_if_needed);
 
         const atlas_data_file = try std.fs.cwd().openFile("data/atlas_data.json", .{});
         defer atlas_data_file.close();
@@ -386,45 +428,45 @@ pub fn main() !void {
         var raw_atlas_json = try atlas_data_file.reader().readAllAlloc(arena_ally.allocator(), 1024 * 2); // 2kib should be enough
 
         var parsed_atlas_data = try parser.parse(raw_atlas_json);
-        const columns_value = parsed_atlas_data.root.Object.get("columns") orelse unreachable;
-        sprite_sheet.columns = @intCast(u16, columns_value.Integer);
+        const columns_value = parsed_atlas_data.root.object.get("columns") orelse unreachable;
+        sprite_sheet.columns = @intCast(u16, columns_value.integer);
 
-        const tile_data = parsed_atlas_data.root.Object.get("tiles") orelse unreachable;
-        for (tile_data.Array.items) |tile| {
-            var tile_id = tile.Object.get("id") orelse unreachable;
-            var tile_type = tile.Object.get("type") orelse unreachable;
-            try sprite_sheet.name_to_id.put(hashString(tile_type.String), @intCast(u16, tile_id.Integer));
+        const tile_data = parsed_atlas_data.root.object.get("tiles") orelse unreachable;
+        for (tile_data.array.items) |tile| {
+            var tile_id = tile.object.get("id") orelse unreachable;
+            var tile_type = tile.object.get("type") orelse unreachable;
+            try sprite_sheet.name_to_id.put(hashString(tile_type.string), @intCast(u16, tile_id.integer));
         }
     }
 
-    var shader: rl.Shader = rl.LoadShader(rl.TextFormat("data/shaders/lighting.vs", @intCast(c_int, 330)), rl.TextFormat("data/shaders/lighting.fs", @intCast(c_int, 330)));
-    shader.locs[@enumToInt(rl.ShaderLocationIndex.SHADER_LOC_VECTOR_VIEW)] = rl.GetShaderLocation(shader, "viewPos");
+    var shader: c.Shader = c.LoadShader(c.TextFormat("data/shaders/lighting.vs", @intCast(c_int, 330)), c.TextFormat("data/shaders/lighting.fs", @intCast(c_int, 330)));
+    shader.locs[c.SHADER_LOC_VECTOR_VIEW] = c.GetShaderLocation(shader, "viewPos");
 
-    const ambient_loc = rl.GetShaderLocation(shader, "ambient");
-    rl.SetShaderValue(shader, ambient_loc, &[_]f32{ 0.01, 0.01, 0.01, 1.0 }, @enumToInt(rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4));
+    const ambient_loc = c.GetShaderLocation(shader, "ambient");
+    c.SetShaderValue(shader, ambient_loc, &[_]f32{ 0.01, 0.01, 0.01, 1.0 }, c.SHADER_UNIFORM_VEC4);
 
     var light_source: Light = undefined;
     // NOTE(caleb): Lighting shader naming must be the provided ones
-    light_source.enabled_loc = rl.GetShaderLocation(shader, "light.enabled");
-    light_source.type_loc = rl.GetShaderLocation(shader, "light.type");
-    light_source.position_loc = rl.GetShaderLocation(shader, "light.position");
-    light_source.target_loc = rl.GetShaderLocation(shader, "light.target");
-    light_source.color_loc = rl.GetShaderLocation(shader, "light.color");
+    light_source.enabled_loc = c.GetShaderLocation(shader, "light.enabled");
+    light_source.type_loc = c.GetShaderLocation(shader, "light.type");
+    light_source.position_loc = c.GetShaderLocation(shader, "light.position");
+    light_source.target_loc = c.GetShaderLocation(shader, "light.target");
+    light_source.color_loc = c.GetShaderLocation(shader, "light.color");
     light_source.color = [4]f32{ 1, 1, 1, 1 };
 
-    var default_material = rl.LoadMaterialDefault();
+    var default_material = c.LoadMaterialDefault();
     default_material.shader = shader;
-    rl.SetMaterialTexture(&default_material, @enumToInt(rl.MATERIAL_MAP_DIFFUSE), sprite_sheet.texture);
+    c.SetMaterialTexture(&default_material, c.MATERIAL_MAP_DIFFUSE, sprite_sheet.texture);
 
     var debug_axes = false;
     var debug_text_info = false;
 
-    var camera: rl.Camera = undefined;
-    camera.position = rl.Vector3{ .x = 0.0, .y = 10.0, .z = 10.0 };
-    camera.target = rl.Vector3{ .x = 0.0, .y = 0.0, .z = -1.0 };
-    camera.up = rl.Vector3{ .x = 0.0, .y = 1.0, .z = 0.0 };
+    var camera: c.Camera = undefined;
+    camera.position = c.Vector3{ .x = 0.0, .y = 10.0, .z = 10.0 };
+    camera.target = c.Vector3{ .x = 0.0, .y = 0.0, .z = -1.0 };
+    camera.up = c.Vector3{ .x = 0.0, .y = 1.0, .z = 0.0 };
     camera.fovy = 60.0;
-    camera.projection = rl.CameraProjection.CAMERA_PERSPECTIVE;
+    camera.projection = c.CAMERA_PERSPECTIVE;
 
     // Debug chunk slice 16x16 at y = 0;
     var dense_map = try arena_ally.allocator().alloc(i16, @floatToInt(i16, chunk_dim.x * chunk_dim.y * chunk_dim.z));
@@ -439,47 +481,49 @@ pub fn main() !void {
         }
     }
 
+    // Reserve 512Kb for a chunk mesh
+    var chunk_mem = try arena_ally.allocator().alloc(u8, 512 * 1024);
+    var chunk_fb_ally = FixedBufferAllocator.init(chunk_mem);
+
     // Initial chunk mesh
-    var tmp_arena_state = arena_ally.state;
-    var chunk_mesh = try cullMesh(arena_ally.allocator(), dense_map, &sprite_sheet);
-    rl.UploadMesh(&chunk_mesh, false);
-    arena_ally = tmp_arena_state.promote(fb_ally.allocator());
+    var chunk_mesh = try cullMesh(chunk_fb_ally.allocator(), dense_map, &sprite_sheet);
+    c.UploadMesh(&chunk_mesh, false);
 
-    while (!rl.WindowShouldClose()) {
-        const screen_dim = rl.Vector2{ .x = @intToFloat(f32, rl.GetScreenWidth()), .y = @intToFloat(f32, rl.GetScreenHeight()) };
-        const screen_mid = rl.Vector2Scale(screen_dim, 0.5);
+    while (!c.WindowShouldClose()) {
+        const screen_dim = c.Vector2{ .x = @intToFloat(f32, c.GetScreenWidth()), .y = @intToFloat(f32, c.GetScreenHeight()) };
+        const screen_mid = c.Vector2Scale(screen_dim, 0.5);
 
-        if (rl.IsKeyPressed(rl.KeyboardKey.KEY_F1)) {
+        if (c.IsKeyPressed(c.KEY_F1)) {
             debug_axes = !debug_axes;
             debug_text_info = !debug_text_info;
         }
 
         var speed_scalar: f32 = 1;
-        if (rl.IsKeyDown(rl.KeyboardKey.KEY_LEFT_SHIFT)) {
+        if (c.IsKeyDown(c.KEY_LEFT_SHIFT)) {
             speed_scalar = 2;
         }
 
-        var camera_move = rl.Vector3{ .x = 0, .y = 0, .z = 0 };
-        if (rl.IsKeyDown(rl.KeyboardKey.KEY_W)) {
-            camera_move.x += move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * rl.GetFrameTime();
+        var camera_move = c.Vector3{ .x = 0, .y = 0, .z = 0 };
+        if (c.IsKeyDown(c.KEY_W)) {
+            camera_move.x += move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * c.GetFrameTime();
         }
-        if (rl.IsKeyDown(rl.KeyboardKey.KEY_S)) {
-            camera_move.x -= move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * rl.GetFrameTime();
+        if (c.IsKeyDown(c.KEY_S)) {
+            camera_move.x -= move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * c.GetFrameTime();
         }
-        if (rl.IsKeyDown(rl.KeyboardKey.KEY_A)) {
-            camera_move.y -= move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * rl.GetFrameTime();
+        if (c.IsKeyDown(c.KEY_A)) {
+            camera_move.y -= move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * c.GetFrameTime();
         }
-        if (rl.IsKeyDown(rl.KeyboardKey.KEY_D)) {
-            camera_move.y += move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * rl.GetFrameTime();
+        if (c.IsKeyDown(c.KEY_D)) {
+            camera_move.y += move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * c.GetFrameTime();
         }
-        if (rl.IsKeyDown(rl.KeyboardKey.KEY_SPACE)) {
-            camera_move.z += move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * rl.GetFrameTime();
+        if (c.IsKeyDown(c.KEY_SPACE)) {
+            camera_move.z += move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * c.GetFrameTime();
         }
-        if (rl.IsKeyDown(rl.KeyboardKey.KEY_LEFT_CONTROL)) {
-            camera_move.z -= move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * rl.GetFrameTime();
+        if (c.IsKeyDown(c.KEY_LEFT_CONTROL)) {
+            camera_move.z -= move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * c.GetFrameTime();
         }
 
-        rl.UpdateCameraPro(&camera, camera_move, rl.Vector3{ .x = rl.GetMouseDelta().x * mouse_sens, .y = rl.GetMouseDelta().y * mouse_sens, .z = 0 }, 0); //rl.GetMouseWheelMove());
+        c.UpdateCameraPro(&camera, camera_move, c.Vector3{ .x = c.GetMouseDelta().x * mouse_sens, .y = c.GetMouseDelta().y * mouse_sens, .z = 0 }, 0); //c.GetMouseWheelMove());
 
         // Update uniform shader values.
         const camera_position = [3]f32{ camera.position.x, camera.position.y, camera.position.z };
@@ -487,161 +531,71 @@ pub fn main() !void {
         light_source.position = camera_position;
         light_source.target = camera_target;
         updateLightValues(shader, &light_source);
-        rl.SetShaderValue(shader, shader.locs[@enumToInt(rl.ShaderLocationIndex.SHADER_LOC_VECTOR_VIEW)], &camera_position, @enumToInt(rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3));
+        c.SetShaderValue(shader, shader.locs[c.SHADER_LOC_VECTOR_VIEW], &camera_position, c.SHADER_UNIFORM_VEC3);
 
-        const crosshair_ray = rl.Ray{ .position = camera.position, .direction = rl.GetCameraForward(&camera) };
-        const crosshair_ray_collision = rl.GetRayCollisionMesh(crosshair_ray, chunk_mesh, rl.MatrixIdentity());
+        const crosshair_ray = c.Ray{ .position = camera.position, .direction = c.GetCameraForward(&camera) };
+        const crosshair_ray_collision = c.GetRayCollisionMesh(crosshair_ray, chunk_mesh, c.MatrixIdentity());
         const look_direction = lookDirection(crosshair_ray.direction);
 
-        var target_block_coords: rl.Vector3 = undefined;
+        var target_block_coords: c.Vector3 = undefined;
         if (crosshair_ray_collision.hit) {
             target_block_coords = blockCoordsFromPoint(dense_map, crosshair_ray_collision.point);
 
-            // Was left mouse pressed?
-
-            if (rl.IsMouseButtonPressed(rl.MouseButton.MOUSE_BUTTON_LEFT)) { // Break block
+            if (c.IsMouseButtonPressed(c.MOUSE_BUTTON_LEFT)) { // Break block
                 denseMapPut(dense_map, 0, @floatToInt(i16, target_block_coords.x), @floatToInt(i16, target_block_coords.y), @floatToInt(i16, target_block_coords.z));
 
                 // Update chunk mesh
-                tmp_arena_state = arena_ally.state;
-                defer arena_ally = tmp_arena_state.promote(fb_ally.allocator());
-
-                //  rl.UnloadMesh(chunk_mesh);
-                chunk_mesh = try cullMesh(arena_ally.allocator(), dense_map, &sprite_sheet);
-                rl.UploadMesh(&chunk_mesh, false);
+                unloadMesh(chunk_mesh);
+                chunk_fb_ally.reset();
+                chunk_mesh = try cullMesh(chunk_fb_ally.allocator(), dense_map, &sprite_sheet);
+                c.UploadMesh(&chunk_mesh, false);
             }
         }
 
-        rl.BeginDrawing();
-        rl.ClearBackground(rl.BLACK);
-        rl.BeginMode3D(camera);
+        c.BeginDrawing();
+        c.ClearBackground(c.BLACK);
+        c.BeginMode3D(camera);
 
-        rl.DrawMesh(chunk_mesh, default_material, rl.MatrixIdentity());
-        // rl.DrawGrid(10, 1);
+        // Only draw this mesh if it's within the view frustum
+        // var chunk_box = AABB{ .pos = c.Vector3Zero(), .dim = chunk_dim };
+        // std.debug.print("{d:.2},{d:.2}\n", .{ screen_pos.x, screen_pos.y });
 
-        rl.EndMode3D();
+        c.DrawMesh(chunk_mesh, default_material, c.MatrixIdentity());
+        // c.DrawGrid(10, 1);
 
-        rl.DrawLineEx(screen_mid, rl.Vector2Add(screen_mid, rl.Vector2{ .x = -crosshair_length_in_pixels, .y = 0 }), crosshair_thickness_in_pixels, rl.WHITE);
-        rl.DrawLineEx(screen_mid, rl.Vector2Add(screen_mid, rl.Vector2{ .x = crosshair_length_in_pixels, .y = 0 }), crosshair_thickness_in_pixels, rl.WHITE);
-        rl.DrawLineEx(screen_mid, rl.Vector2Add(screen_mid, rl.Vector2{ .x = 0, .y = -crosshair_length_in_pixels }), crosshair_thickness_in_pixels, rl.WHITE);
-        rl.DrawLineEx(screen_mid, rl.Vector2Add(screen_mid, rl.Vector2{ .x = 0, .y = crosshair_length_in_pixels }), crosshair_thickness_in_pixels, rl.WHITE);
+        c.EndMode3D();
+
+        c.DrawLineEx(screen_mid, c.Vector2Add(screen_mid, c.Vector2{ .x = -crosshair_length_in_pixels, .y = 0 }), crosshair_thickness_in_pixels, c.WHITE);
+        c.DrawLineEx(screen_mid, c.Vector2Add(screen_mid, c.Vector2{ .x = crosshair_length_in_pixels, .y = 0 }), crosshair_thickness_in_pixels, c.WHITE);
+        c.DrawLineEx(screen_mid, c.Vector2Add(screen_mid, c.Vector2{ .x = 0, .y = -crosshair_length_in_pixels }), crosshair_thickness_in_pixels, c.WHITE);
+        c.DrawLineEx(screen_mid, c.Vector2Add(screen_mid, c.Vector2{ .x = 0, .y = crosshair_length_in_pixels }), crosshair_thickness_in_pixels, c.WHITE);
 
         if (debug_text_info) {
             var strz_buffer: [256]u8 = undefined;
-            const fps_strz = try std.fmt.bufPrintZ(&strz_buffer, "FPS:{d}", .{rl.GetFPS()});
-            const fps_strz_dim = rl.MeasureTextEx(font, @ptrCast([*c]const u8, fps_strz), font_size, font_spacing);
-            rl.DrawTextEx(font, @ptrCast([*c]const u8, fps_strz), rl.Vector2{ .x = 0, .y = 0 }, font_size, font_spacing, rl.WHITE);
+            const fps_strz = try std.fmt.bufPrintZ(&strz_buffer, "FPS:{d}", .{c.GetFPS()});
+            const fps_strz_dim = c.MeasureTextEx(font, @ptrCast([*c]const u8, fps_strz), font_size, font_spacing);
+            c.DrawTextEx(font, @ptrCast([*c]const u8, fps_strz), c.Vector2{ .x = 0, .y = 0 }, font_size, font_spacing, c.WHITE);
 
             const camera_pos_strz = try std.fmt.bufPrintZ(&strz_buffer, "camera pos: (x:{d:.2}, y:{d:.2}, z:{d:.2})", .{ camera.position.x, camera.position.y, camera.position.z });
-            const camera_pos_strz_dim = rl.MeasureTextEx(font, @ptrCast([*c]const u8, camera_pos_strz), font_size, font_spacing);
-            rl.DrawTextEx(font, @ptrCast([*c]const u8, camera_pos_strz), rl.Vector2{ .x = 0, .y = fps_strz_dim.y }, font_size, font_spacing, rl.WHITE);
+            const camera_pos_strz_dim = c.MeasureTextEx(font, @ptrCast([*c]const u8, camera_pos_strz), font_size, font_spacing);
+            c.DrawTextEx(font, @ptrCast([*c]const u8, camera_pos_strz), c.Vector2{ .x = 0, .y = fps_strz_dim.y }, font_size, font_spacing, c.WHITE);
 
             var target_block_point_strz = try std.fmt.bufPrintZ(&strz_buffer, "No collision", .{});
-            var target_block_point_strz_dim = rl.MeasureTextEx(font, @ptrCast([*c]const u8, target_block_point_strz), font_size, font_spacing);
+            var target_block_point_strz_dim = c.MeasureTextEx(font, @ptrCast([*c]const u8, target_block_point_strz), font_size, font_spacing);
             if (crosshair_ray_collision.hit) {
                 target_block_point_strz = try std.fmt.bufPrintZ(&strz_buffer, "Target block: (x:{d:.2}, y:{d:.2}, z:{d:.2})", .{ target_block_coords.x, target_block_coords.y, target_block_coords.z });
-                target_block_point_strz_dim = rl.MeasureTextEx(font, @ptrCast([*c]const u8, target_block_point_strz), font_size, font_spacing);
+                target_block_point_strz_dim = c.MeasureTextEx(font, @ptrCast([*c]const u8, target_block_point_strz), font_size, font_spacing);
             }
-            rl.DrawTextEx(font, @ptrCast([*c]const u8, target_block_point_strz), rl.Vector2{ .x = 0, .y = fps_strz_dim.y + camera_pos_strz_dim.y }, font_size, font_spacing, rl.WHITE);
+            c.DrawTextEx(font, @ptrCast([*c]const u8, target_block_point_strz), c.Vector2{ .x = 0, .y = fps_strz_dim.y + camera_pos_strz_dim.y }, font_size, font_spacing, c.WHITE);
 
             const look_direction_strz = try std.fmt.bufPrintZ(&strz_buffer, "Look direction: {s}", .{@tagName(look_direction)});
-            const look_direction_strz_dim = rl.MeasureTextEx(font, @ptrCast([*c]const u8, look_direction_strz), font_size, font_spacing);
+            const look_direction_strz_dim = c.MeasureTextEx(font, @ptrCast([*c]const u8, look_direction_strz), font_size, font_spacing);
             _ = look_direction_strz_dim;
-            rl.DrawTextEx(font, @ptrCast([*c]const u8, look_direction_strz), rl.Vector2{ .x = 0, .y = fps_strz_dim.y + camera_pos_strz_dim.y + target_block_point_strz_dim.y }, font_size, font_spacing, rl.WHITE);
+            c.DrawTextEx(font, @ptrCast([*c]const u8, look_direction_strz), c.Vector2{ .x = 0, .y = fps_strz_dim.y + camera_pos_strz_dim.y + target_block_point_strz_dim.y }, font_size, font_spacing, c.WHITE);
         }
 
-        rl.EndDrawing();
+        c.EndDrawing();
     }
 
-    rl.CloseWindow();
-}
-
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
-}
-
-/// Draw cube textured
-fn drawCubeTexture(top_texture: rl.Texture2D, not_top_texture: rl.Texture2D, pos: rl.Vector3, width: f32, height: f32, length: f32, color: rl.Color) void {
-    const x = pos.x;
-    const y = pos.y;
-    const z = pos.z;
-
-    rlgl.Begin(@enumToInt(rlgl.DrawMode.QUADS));
-    rlgl.Color4ub(color.r, color.g, color.b, color.a);
-
-    rlgl.SetTexture(top_texture.id);
-
-    // Top Face
-    rlgl.Normal3f(0.0, 1.0, 0.0); // Normal Pointing Up
-    rlgl.TexCoord2f(0.0, 1.0);
-    rlgl.Vertex3f(x, y + height, z); // Top Left Of The Texture and Quad
-    rlgl.TexCoord2f(0.0, 0.0);
-    rlgl.Vertex3f(x, y + height, z + length); // Bottom Left Of The Texture and Quad
-    rlgl.TexCoord2f(1.0, 0.0);
-    rlgl.Vertex3f(x + width, y + height, z + length); // Bottom Right Of The Texture and Quad
-    rlgl.TexCoord2f(1.0, 1.0);
-    rlgl.Vertex3f(x + width, y + height, z); // Top Right Of The Texture and Quad
-
-    rlgl.SetTexture(not_top_texture.id);
-
-    // Front Face
-    rlgl.Normal3f(0.0, 0.0, 1.0); // Normal Pointing Towards Viewer
-    rlgl.TexCoord2f(0.0, 0.0);
-    rlgl.Vertex3f(x, y, z + length); // Bottom Left Of The Texture and Quad
-    rlgl.TexCoord2f(1.0, 0.0);
-    rlgl.Vertex3f(x + width, y, z + length); // Bottom Right Of The Texture and Quad
-    rlgl.TexCoord2f(1.0, 1.0);
-    rlgl.Vertex3f(x + width, y + height, z + length); // Top Right Of The Texture and Quad
-    rlgl.TexCoord2f(0.0, 1.0);
-    rlgl.Vertex3f(x, y + height, z + length); // Top Left Of The Texture and Quad
-
-    // Back Face
-    rlgl.Normal3f(0.0, 0.0, -1.0); // Normal Pointing Away From Viewer
-    rlgl.TexCoord2f(0.0, 0.0);
-    rlgl.Vertex3f(x + width, y, z); // Bottom Left Of The Texture and Quad
-    rlgl.TexCoord2f(1.0, 0.0);
-    rlgl.Vertex3f(x, y, z); // Bottom Right Of The Texture and Quad
-    rlgl.TexCoord2f(1.0, 1.0);
-    rlgl.Vertex3f(x, y + height, z); // Top Right Of The Texture and Quad
-    rlgl.TexCoord2f(0.0, 1.0);
-    rlgl.Vertex3f(x + width, y + height, z); // Top Left Of The Texture and Quad
-
-    // Bottom Face
-    rlgl.Normal3f(0.0, -1.0, 0.0); // Normal Pointing Down
-    rlgl.TexCoord2f(1.0, 1.0);
-    rlgl.Vertex3f(x + width, y, z + length); // Top Right Of The Texture and Quad
-    rlgl.TexCoord2f(0.0, 1.0);
-    rlgl.Vertex3f(x, y, z + width); // Top Left Of The Texture and Quad
-    rlgl.TexCoord2f(0.0, 0.0);
-    rlgl.Vertex3f(x, y, z); // Bottom Left Of The Texture and Quad
-    rlgl.TexCoord2f(1.0, 0.0);
-    rlgl.Vertex3f(x + width, y, z); // Bottom Right Of The Texture and Quad
-
-    // Right face
-    rlgl.Normal3f(1.0, 0.0, 0.0); // Normal Pointing Right
-    rlgl.TexCoord2f(1.0, 0.0);
-    rlgl.Vertex3f(x + width, y, z); // Bottom Right Of The Texture and Quad
-    rlgl.TexCoord2f(1.0, 1.0);
-    rlgl.Vertex3f(x + width, y + height, z); // Top Right Of The Texture and Quad
-    rlgl.TexCoord2f(0.0, 1.0);
-    rlgl.Vertex3f(x + width, y + height, z + length); // Top Left Of The Texture and Quad
-    rlgl.TexCoord2f(0.0, 0.0);
-    rlgl.Vertex3f(x + width, y, z + length); // Bottom Left Of The Texture and Quad
-
-    // Left Face
-    rlgl.Normal3f(-1.0, 0.0, 0.0); // Normal Pointing Left
-    rlgl.TexCoord2f(0.0, 0.0);
-    rlgl.Vertex3f(x, y, z); // Bottom Left Of The Texture and Quad
-    rlgl.TexCoord2f(1.0, 0.0);
-    rlgl.Vertex3f(x, y, z + length); // Bottom Right Of The Texture and Quad
-    rlgl.TexCoord2f(1.0, 1.0);
-    rlgl.Vertex3f(x, y + height, z + length); // Top Right Of The Texture and Quad
-    rlgl.TexCoord2f(0.0, 1.0);
-    rlgl.Vertex3f(x, y + height, z); // Top Left Of The Texture and Quad
-
-    rlgl.SetTexture(0);
-    rlgl.End();
+    c.CloseWindow();
 }
