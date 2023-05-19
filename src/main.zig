@@ -30,15 +30,16 @@ const chunk_dim = c.Vector3{ .x = 16, .y = 16, .z = 16 };
 const crosshair_thickness_in_pixels = 2;
 const crosshair_length_in_pixels = 20;
 
+const fovy = 60.0;
 const target_range_in_blocks = 4;
 const meters_per_block = 1;
 const move_speed_blocks_per_second = 3;
 const mouse_sens = 0.1;
 
-const font_size = 30;
+const font_size = 20;
 const font_spacing = 2;
 
-const target_fps = 60;
+const target_fps = 120;
 
 const SpriteSheet = struct {
     columns: u16,
@@ -46,20 +47,97 @@ const SpriteSheet = struct {
     name_to_id: AutoHashMap(u64, u16),
 };
 
+const Plane = struct {
+    point: c.Vector3,
+    normal: c.Vector3,
+    distance: f32,
+
+    pub inline fn distanceFromPoint(this: *const Plane, point: c.Vector3) f32 {
+        return c.Vector3DotProduct(this.normal, point) + this.distance;
+    }
+};
+
+const Frustum = struct {
+    planes: [6]Plane,
+};
+
+const PlaneIndex = enum(u8) {
+    top = 0,
+    bottom,
+    left,
+    right,
+    near,
+    far,
+};
+
+fn normalizePlane(plane: *Plane) void {
+    const mag = c.Vector3Length(plane.normal);
+    plane.normal.x /= mag;
+    plane.normal.y /= mag;
+    plane.normal.z /= mag;
+    plane.distance /= mag;
+}
+
+fn frustumFromCamera(camera: *c.Camera, aspect: f32) Frustum {
+    var result: Frustum = undefined;
+
+    const camera_right = c.Vector3CrossProduct(c.GetCameraForward(camera), camera.up);
+
+    const height_near = 2.0 * @tan(fovy / 2.0) * c.CAMERA_CULL_DISTANCE_NEAR;
+    const width_near = height_near * aspect;
+    const height_far = 2.0 * @tan(fovy / 2.0) * c.CAMERA_CULL_DISTANCE_FAR;
+    const width_far = height_far * aspect;
+
+    const far_center = c.Vector3Add(camera.position, c.Vector3Scale(c.GetCameraForward(camera), c.CAMERA_CULL_DISTANCE_FAR));
+    const far_top_right = c.Vector3Add(c.Vector3Subtract(far_center, c.Vector3Scale(camera.up, @floatCast(f32, height_far / 2))), c.Vector3Scale(camera_right, @floatCast(f32, width_far / 2)));
+    const far_top_left = c.Vector3Subtract(c.Vector3Subtract(far_center, c.Vector3Scale(camera.up, @floatCast(f32, height_far / 2))), c.Vector3Scale(camera_right, @floatCast(f32, width_far / 2)));
+    const far_bottom_left = c.Vector3Subtract(c.Vector3Add(far_center, c.Vector3Scale(camera.up, @floatCast(f32, height_far / 2))), c.Vector3Scale(camera_right, @floatCast(f32, width_far / 2)));
+    const far_bottom_right = c.Vector3Add(c.Vector3Add(far_center, c.Vector3Scale(camera.up, @floatCast(f32, height_far / 2))), c.Vector3Scale(camera_right, @floatCast(f32, width_far / 2)));
+
+    const near_center = c.Vector3Add(camera.position, c.Vector3Scale(c.GetCameraForward(camera), @floatCast(f32, c.CAMERA_CULL_DISTANCE_NEAR)));
+    const near_top_right = c.Vector3Add(c.Vector3Add(near_center, c.Vector3Scale(camera.up, @floatCast(f32, height_near / 2))), c.Vector3Scale(camera_right, @floatCast(f32, width_near / 2)));
+    const near_top_left = c.Vector3Subtract(c.Vector3Subtract(near_center, c.Vector3Scale(camera.up, @floatCast(f32, height_near / 2))), c.Vector3Scale(camera_right, @floatCast(f32, width_near / 2)));
+    const near_bottom_left = c.Vector3Subtract(c.Vector3Add(near_center, c.Vector3Scale(camera.up, @floatCast(f32, height_near / 2))), c.Vector3Scale(camera_right, @floatCast(f32, width_near / 2)));
+    const near_bottom_right = c.Vector3Add(c.Vector3Add(near_center, c.Vector3Scale(camera.up, @floatCast(f32, height_near / 2))), c.Vector3Scale(camera_right, @floatCast(f32, width_near / 2)));
+
+    c.DrawLine3D(near_top_right, far_top_right, c.WHITE);
+
+    result.planes[@enumToInt(PlaneIndex.top)] = planeFromPoints(near_top_right, near_top_left, far_top_left);
+    result.planes[@enumToInt(PlaneIndex.bottom)] = planeFromPoints(near_bottom_left, near_bottom_right, far_bottom_right);
+    result.planes[@enumToInt(PlaneIndex.left)] = planeFromPoints(near_top_left, near_bottom_left, far_bottom_left);
+    result.planes[@enumToInt(PlaneIndex.right)] = planeFromPoints(near_bottom_right, near_top_right, far_bottom_right);
+    result.planes[@enumToInt(PlaneIndex.near)] = planeFromPoints(near_top_left, near_top_right, near_bottom_right);
+    result.planes[@enumToInt(PlaneIndex.far)] = planeFromPoints(far_top_right, far_top_left, far_bottom_left);
+
+    return result;
+}
+
+fn planeFromPoints(v1: c.Vector3, v2: c.Vector3, v3: c.Vector3) Plane {
+    var result: Plane = undefined;
+
+    const aux1 = c.Vector3Subtract(v1, v2);
+    const aux2 = c.Vector3Subtract(v3, v2);
+    result.normal = c.Vector3Normalize(c.Vector3CrossProduct(aux1, aux2));
+    result.point = v2;
+    result.distance = -c.Vector3DotProduct(result.normal, result.point);
+
+    return result;
+}
+
 // Axis aligned bounding box
 const AABB = struct {
     pos: c.Vector3, // Bottom left
     dim: c.Vector3,
 
-    pub inline fn getVP(this: *AABB, normal: c.Vector3) c.Vector3 {
+    pub inline fn getVectorP(this: *AABB, normal: c.Vector3) c.Vector3 {
         var result = this.pos;
-        if (normal.x > 0) {
+        if (normal.x >= 0) {
             result.x += this.dim.x;
         }
-        if (normal.y > 0) {
+        if (normal.y >= 0) {
             result.y += this.dim.y;
         }
-        if (normal.z > 0) {
+        if (normal.z >= 0) {
             result.z += this.dim.z;
         }
         return result;
@@ -398,8 +476,8 @@ inline fn lookDirection(direction: c.Vector3) Direction {
 }
 
 pub fn main() !void {
-    const screen_width: c_int = 1600;
-    const screen_height: c_int = 900;
+    const screen_width: c_int = 1920;
+    const screen_height: c_int = 1080;
     c.InitWindow(screen_width, screen_height, "Scary Craft");
     c.SetConfigFlags(c.FLAG_MSAA_4X_HINT);
     c.SetWindowState(c.FLAG_WINDOW_RESIZABLE);
@@ -465,7 +543,7 @@ pub fn main() !void {
     camera.position = c.Vector3{ .x = 0.0, .y = 10.0, .z = 10.0 };
     camera.target = c.Vector3{ .x = 0.0, .y = 0.0, .z = -1.0 };
     camera.up = c.Vector3{ .x = 0.0, .y = 1.0, .z = 0.0 };
-    camera.fovy = 60.0;
+    camera.fovy = fovy;
     camera.projection = c.CAMERA_PERSPECTIVE;
 
     // Debug chunk slice 16x16 at y = 0;
@@ -492,6 +570,7 @@ pub fn main() !void {
     while (!c.WindowShouldClose()) {
         const screen_dim = c.Vector2{ .x = @intToFloat(f32, c.GetScreenWidth()), .y = @intToFloat(f32, c.GetScreenHeight()) };
         const screen_mid = c.Vector2Scale(screen_dim, 0.5);
+        const aspect = screen_dim.x / screen_dim.y;
 
         if (c.IsKeyPressed(c.KEY_F1)) {
             debug_axes = !debug_axes;
@@ -556,11 +635,27 @@ pub fn main() !void {
         c.ClearBackground(c.BLACK);
         c.BeginMode3D(camera);
 
-        // Only draw this mesh if it's within the view frustum
-        // var chunk_box = AABB{ .pos = c.Vector3Zero(), .dim = chunk_dim };
-        // std.debug.print("{d:.2},{d:.2}\n", .{ screen_pos.x, screen_pos.y });
+        const frustum = frustumFromCamera(&camera, aspect);
+        var chunk_box = AABB{ .pos = c.Vector3Zero(), .dim = chunk_dim };
 
-        c.DrawMesh(chunk_mesh, default_material, c.MatrixIdentity());
+        var should_draw_chunk = true;
+        for (frustum.planes) |plane| {
+            if (plane.distanceFromPoint(chunk_box.getVectorP(plane.normal)) < 0) {
+                should_draw_chunk = false;
+                break;
+            }
+        }
+
+        if (should_draw_chunk) {
+            std.debug.print("Drawing chunkerrr\n", .{});
+        } else {
+            std.debug.print("Not Drawing chunkerrr\n", .{});
+        }
+
+        // Only draw this mesh if it's within the view frustum
+        // std.debug.print("{d:.2},{d:.2}\n", .{ screen_pos.x, screen_pos.y });
+        if (should_draw_chunk)
+            c.DrawMesh(chunk_mesh, default_material, c.MatrixIdentity());
         // c.DrawGrid(10, 1);
 
         c.EndMode3D();

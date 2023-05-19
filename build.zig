@@ -24,13 +24,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-
     const rl_lib = rl.addRaylib(b, exe.target, exe.optimize);
     rl_lib.installHeader("raylib/src/raylib.h", "raylib.h");
     rl_lib.installHeader("raylib/src/raymath.h", "raymath.h");
     rl_lib.installHeader("raylib/src/rcamera.h", "rcamera.h");
     rl_lib.installHeader("raylib/src/rlgl.h", "rlgl.h");
-    b.installArtifact(rl_lib);
     exe.addIncludePath("zig-out/include");
     exe.linkLibC();
     exe.linkLibrary(rl_lib);
