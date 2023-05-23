@@ -18,6 +18,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const FixedBufferAllocator = std.heap.FixedBufferAllocator;
 
 const hashString = std.hash_map.hashString;
+const vector3IZero = scary_types.vector3IZero;
 
 // TODO(caleb):
 // -----------------------------------------------------------------------------------
@@ -45,6 +46,77 @@ const font_size = 20;
 const font_spacing = 2;
 
 const loaded_chunk_capacity = 20;
+
+const WorldSaveHeader = packed struct {
+    chunk_count: u32,
+};
+
+const WorldSaveChunk = packed struct {
+    id: u32, // NOTE(caleb): This will act as an index into the world save.
+    coords: Vector3I,
+};
+
+const ChunknaryTreeNode = struct {
+    id: u32,
+    coords: Vector3I,
+    right: ?*ChunknaryTreeNode,
+    left: ?*ChunknaryTreeNode,
+};
+
+fn chunknaryTreeTraverseLeft(a: Vector3I, b: Vector3I) bool {
+    var check_left: bool = undefined;
+    if (a.x < b.x) { // Check x coords
+        check_left = true;
+    } else if (a.x > b.x) {
+        check_left = false;
+    } else { // X coord is equal check y
+        if (a.y < b.y) {
+            check_left = true;
+        } else if (a.y > b.y) {
+            check_left = false;
+        } else { // Y coord is equal check z
+            if (a.z < b.z) {
+                check_left = true;
+            } else if (a.z > b.z) {
+                check_left = false;
+            } else unreachable;
+        }
+    }
+    return check_left;
+}
+
+fn chunknaryTreeSearch(root: ?*ChunknaryTreeNode, coords: Vector3I) ?*ChunknaryTreeNode {
+    var target_node: ?*ChunknaryTreeNode = null;
+    var current_node = root;
+    while (current_node != null) {
+        if (coords.equals(current_node.?.coords)) { // Found target node
+            target_node = current_node;
+            break;
+        }
+        if (chunknaryTreeTraverseLeft(coords, current_node.?.coords)) {
+            current_node = current_node.?.left;
+        } else {
+            current_node = current_node.?.right;
+        }
+    }
+    return target_node;
+}
+
+fn chunknaryTreeInsert(ally: Allocator, root: ?*ChunknaryTreeNode, id: u32, coords: Vector3I) !void {
+    var current_node = root;
+    while (current_node != null) {
+        if (chunknaryTreeTraverseLeft(coords, current_node.?.coords)) {
+            current_node = current_node.?.left;
+        } else {
+            current_node = current_node.?.right;
+        }
+    }
+    current_node = @ptrCast(?*ChunknaryTreeNode, try ally.create(ChunknaryTreeNode));
+    current_node.?.id = id;
+    current_node.?.coords = coords;
+    current_node.?.left = null;
+    current_node.?.right = null;
+}
 
 const SpriteSheet = struct {
     columns: u16,
@@ -115,20 +187,53 @@ const BlockHit = struct {
 };
 
 /// Load 'loaded_chunk_capacity' chunks into active_chunks around the player.
-fn loadChunks(chunk_map: *AutoHashMap(u64, Chunk), loaded_chunks: []*Chunk, player_pos: Vector3I) void {
-    var loaded_chunk_count = 0;
+fn loadChunks(
+    chunknary_tree_root: *ChunknaryTreeNode,
+    chunk_map: *AutoHashMap(u64, Chunk),
+    loaded_chunks: []*Chunk,
+    player_pos: Vector3I,
+) !void {
+    var loaded_chunk_count: u8 = 0;
+    for (loaded_chunks) |chunk| {
+        chunk.id = 0;
+        chunk.coords = vector3IZero();
+        for (&chunk.block_data) |*byte| {
+            byte.* = 0;
+        }
+    }
 
-    // 1) Get the chunk corosponding to player_pos
+    // Get the chunk corosponding to player_pos
     const player_chunk_coords = worldToChunkCoords(player_pos);
 
+    // Assign start chunk from player chunk
     var chunk_hash_buf: [128]u8 = undefined;
-    const player_chunk_coords_str = std.fmt.bufPrint(&chunk_hash_buf, "{d}{d}{d}", player_chunk_coords.x, player_chunk_coords.y, player_chunk_coords.z);
-    var current_chunk_ptr = chunk_map.getPtr(hashString(player_chunk_coords_str)) orelse unreachable; // TODO(caleb): Handle not having a chunk that would be at player pos.
+    const player_chunk_coords_str = try std.fmt.bufPrint(&chunk_hash_buf, "{d}{d}{d}", .{ player_chunk_coords.x, player_chunk_coords.y, player_chunk_coords.z });
+    var current_chunk_ptr = chunk_map.getPtr(hashString(player_chunk_coords_str)) orelse blk: { // Chunk not in map.
+        var world_chunk: Chunk = undefined;
+
+        const world_chunk_node = chunknaryTreeSearch(chunknary_tree_root, player_chunk_coords);
+        if (world_chunk_node == null) { // Chunk isn't on disk. Initialize a new chunk.
+            world_chunk.coords = player_chunk_coords;
+            // NOTE(caleb): Chunk id is assigned either on world save or on chunk map eviction
+            //     a value of 0 indicates that it needs a new entry in the save file.
+            world_chunk.id = 0;
+            for (&world_chunk.block_data) |*block| block.* = 0;
+        } else { // Use save chunk's id to retrive from disk
+            const world_save_file = try std.fs.cwd().createFile("data/world.sav", .{ .truncate = true });
+            defer world_save_file.close();
+            const world_save_reader = world_save_file.reader();
+            try world_save_reader.skipBytes(@sizeOf(WorldSaveHeader), .{});
+            try world_save_reader.skipBytes((@sizeOf(WorldSaveChunk) + @intCast(u32, chunk_dim.x) * @intCast(u32, chunk_dim.y) * @intCast(i32, chunk_dim.z)) * (world_chunk_node.?.id - 1), .{});
+            const world_save_chunk = try world_save_reader.readStruct(WorldSaveChunk);
+            world_chunk.id = world_save_chunk.id;
+            world_chunk.coords = world_save_chunk.coords;
+            world_chunk.block_data = try world_save_reader.readBytesNoEof(chunk_dim.x * chunk_dim.y * chunk_dim.z);
+        }
+
+        chunk_map.putAssumeCapacityNoClobber(hashString(player_chunk_coords_str), world_chunk);
+        break :blk chunk_map.getPtr(hashString(player_chunk_coords_str)) orelse unreachable;
+    };
     loaded_chunks[loaded_chunk_count] = current_chunk_ptr;
-
-    // 2) Given a chunk coord get me the chunk data can I store this in the chunk_map?
-
-    // 3) Load this chunk into active_chunks
 }
 
 /// Gribb-Hartmann viewing frustum extraction.
@@ -239,7 +344,9 @@ const Direction = enum {
 };
 
 const Chunk = struct {
-    BlockData: [chunk_dim.x * chunk_dim.y * chunk_dim.z]u8,
+    id: u32,
+    coords: Vector3I,
+    block_data: [chunk_dim.x * chunk_dim.y * chunk_dim.z]u8,
 };
 
 /// Given a pos in world space, return the eqv. chunk space coords.
@@ -278,11 +385,11 @@ fn updateLightValues(shader: rl.Shader, light: *Light) void {
     rl.SetShaderValue(shader, light.color_loc, &light.color, rl.SHADER_UNIFORM_VEC4);
 }
 
-inline fn denseMapPut(dense_map: []i16, val: i16, x: i16, y: i16, z: i16) void {
+inline fn denseMapPut(dense_map: []u8, val: i16, x: i16, y: i16, z: i16) void {
     dense_map[@intCast(u16, chunk_dim.x * chunk_dim.y) * @intCast(u16, z) + @intCast(u16, y) * @intCast(u16, chunk_dim.x) + @intCast(u16, x)] = val;
 }
 
-inline fn denseMapLookup(dense_map: []i16, x: i16, y: i16, z: i16) ?i16 {
+inline fn denseMapLookup(dense_map: []u8, x: i16, y: i16, z: i16) ?i16 {
     if (x >= chunk_dim.x or y >= chunk_dim.y or z >= chunk_dim.z or x < 0 or y < 0 or z < 0)
         return null; // Block index out of bounds.
     return dense_map[@intCast(u16, chunk_dim.x * chunk_dim.y) * @intCast(u16, z) + @intCast(u16, y) * @intCast(u16, chunk_dim.x) + @intCast(u16, x)];
@@ -290,7 +397,8 @@ inline fn denseMapLookup(dense_map: []i16, x: i16, y: i16, z: i16) ?i16 {
 
 /// Given a ray collision point, figure out the the world space block coords of the block being
 /// selected and the face it is being selected from.
-fn blockHitFromPoint(dense_map: []i16, p: rl.Vector3) BlockHit {
+/// FIXME(caleb): This function breaks down at collisions with distance exceeding ~30 blocks.
+fn blockHitFromPoint(dense_map: []u8, p: rl.Vector3) BlockHit {
     var result: BlockHit = undefined;
     const block_x = @floatToInt(i16, p.x + rl.EPSILON);
     const block_y = @floatToInt(i16, p.y + rl.EPSILON);
@@ -333,8 +441,6 @@ fn blockHitFromPoint(dense_map: []i16, p: rl.Vector3) BlockHit {
         }
         result.coords = rl.Vector3{ .x = @intToFloat(f32, block_x), .y = @intToFloat(f32, block_y), .z = @intToFloat(f32, block_z) };
     } else {
-        debug.print("{d}\n", .{@round(p.y)});
-        debug.print("{d:.6}\n", .{p.y}); //std.math.approxEqRel(f32, @round(p.y), p.y, rl.EPSILON);
         if (std.math.approxEqRel(f32, @round(p.x), p.x, rl.EPSILON)) { // Right face
             result.coords = rl.Vector3{ .x = @intToFloat(f32, block_x - 1), .y = @intToFloat(f32, block_y), .z = @intToFloat(f32, block_z) };
             result.face = PlaneIndex.right;
@@ -375,7 +481,7 @@ inline fn setVertex3f(verticies: []f32, verticies_offset: *u32, x: f32, y: f32, 
     verticies_offset.* += 3;
 }
 
-inline fn solidBlock(dense_map: []i16, x: i16, y: i16, z: i16) bool {
+inline fn solidBlock(dense_map: []u8, x: i16, y: i16, z: i16) bool {
     var result = false;
     if (denseMapLookup(dense_map, x, y, z)) |block| {
         if (block == 1)
@@ -385,7 +491,7 @@ inline fn solidBlock(dense_map: []i16, x: i16, y: i16, z: i16) bool {
 }
 
 /// Generate chunk sized mesh starting at world origin.
-fn cullMesh(ally: Allocator, dense_map: []i16, sprite_sheet: *SpriteSheet) !rl.Mesh {
+fn cullMesh(ally: Allocator, dense_map: []u8, sprite_sheet: *SpriteSheet) !rl.Mesh {
     var result = std.mem.zeroes(rl.Mesh);
     var face_count: c_int = 0;
     {
@@ -664,38 +770,65 @@ pub fn main() !void {
     camera.fovy = fovy;
     camera.projection = rl.CAMERA_PERSPECTIVE;
 
-    var chunk_map = AutoHashMap(u64, Chunk).init(arena_ally.allocator());
-    try chunk_map.ensureTotalCapacity(loaded_chunk_capacity);
+    // NOTE(caleb): This block is just creating a dummy world save
+    {
+        const world_save_file = try std.fs.cwd().createFile("data/world.sav", .{ .truncate = true });
+        defer world_save_file.close();
+        const world_save_writer = world_save_file.writer();
 
-    // Create a chunk slice 16x16 at y = 0;
-    var test_chunk: Chunk = undefined;
-    for (test_chunk.BlockData) |*value|
-        value.* = 0;
+        const world_save_header = WorldSaveHeader{ .chunk_count = 1 };
 
-    var block_z: u16 = 0;
-    while (block_z < chunk_dim.z) : (block_z += 1) {
-        var block_x: u16 = 0;
-        while (block_x < chunk_dim.x) : (block_x += 1) {
-            test_chunk.BlockData[@intCast(u16, chunk_dim.x * chunk_dim.y) * block_z + block_x] = 1;
+        // Create a chunk slice 16x16 at y = 0;
+        var test_chunk: WorldSaveChunk = undefined;
+        test_chunk.coords = Vector3I{ .x = 0, .y = 0, .z = 0 };
+        test_chunk.id = 1;
+        var block_data: [chunk_dim.x * chunk_dim.y * chunk_dim.z]u8 = undefined;
+        for (&block_data) |*byte| byte.* = 0;
+
+        var block_z: u16 = 0;
+        while (block_z < chunk_dim.z) : (block_z += 1) {
+            var block_x: u16 = 0;
+            while (block_x < chunk_dim.x) : (block_x += 1) {
+                block_data[@intCast(u16, chunk_dim.x * chunk_dim.y) * block_z + block_x] = 1;
+            }
+        }
+
+        try world_save_writer.writeStruct(world_save_header);
+        try world_save_writer.writeStruct(test_chunk);
+        try world_save_writer.writeAll(&block_data);
+    }
+
+    var chunknary_tree_root: ?*ChunknaryTreeNode = null;
+    {
+        const world_save_file = try std.fs.cwd().openFile("data/world.sav", .{});
+        defer world_save_file.close();
+        const save_file_reader = world_save_file.reader();
+        const world_save_header = try save_file_reader.readStruct(WorldSaveHeader);
+        for (0..world_save_header.chunk_count) |_| {
+            const world_save_chunk = try save_file_reader.readStruct(WorldSaveChunk);
+            try chunknaryTreeInsert(arena_ally.allocator(), chunknary_tree_root, world_save_chunk.id, world_save_chunk.coords);
         }
     }
 
-    // Insert test chunk into map
-    var chunk_hash_buf: [128]u8 = undefined;
-    var player_chunk_coords = worldToChunkCoords(camera.position);
-    const player_chunk_coords_str = std.fmt.bufPrint(&chunk_hash_buf, "{d}{d}{d}", player_chunk_coords.x, player_chunk_coords.y, player_chunk_coords.z);
-    chunk_map.putAssumeCapacity(hashString(player_chunk_coords_str), test_chunk);
+    var chunk_map = AutoHashMap(u64, Chunk).init(arena_ally.allocator());
+    try chunk_map.ensureTotalCapacity(loaded_chunk_capacity);
 
     var loaded_chunks: [loaded_chunk_capacity]*Chunk = undefined;
-    loadChunks(&chunk_map, &loaded_chunks, camera.position);
+    try loadChunks(@ptrCast(*ChunknaryTreeNode, chunknary_tree_root.?), &chunk_map, &loaded_chunks, Vector3I{
+        .x = @floatToInt(i32, camera.position.x),
+        .y = @floatToInt(i32, camera.position.y),
+        .z = @floatToInt(i32, camera.position.z),
+    });
 
     // Reserve 512Kb for mesh allocations
     var mesh_mem = try arena_ally.allocator().alloc(u8, 512 * 1024);
     var mesh_fb_ally = FixedBufferAllocator.init(mesh_mem);
 
-    // Initial chunk mesh
-    var chunk_mesh = try cullMesh(mesh_fb_ally.allocator(), test_chunk.BlockData, &sprite_sheet);
-    rl.UploadMesh(&chunk_mesh, false);
+    var chunk_meshes: [loaded_chunk_capacity]rl.Mesh = undefined;
+    for (loaded_chunks, 0..) |chunk, chunk_index| {
+        chunk_meshes[chunk_index] = cullMesh(mesh_fb_ally.allocator(), &chunk.block_data, &sprite_sheet) catch std.mem.zeroes(rl.Mesh);
+        rl.UploadMesh(&chunk_meshes[chunk_index], false);
+    }
 
     while (!rl.WindowShouldClose()) {
         const screen_dim = rl.Vector2{ .x = @intToFloat(f32, rl.GetScreenWidth()), .y = @intToFloat(f32, rl.GetScreenHeight()) };
@@ -743,21 +876,31 @@ pub fn main() !void {
         rl.SetShaderValue(shader, shader.locs[rl.SHADER_LOC_VECTOR_VIEW], &camera_position, rl.SHADER_UNIFORM_VEC3);
 
         const crosshair_ray = rl.Ray{ .position = camera.position, .direction = rl.GetCameraForward(&camera) };
-        const crosshair_ray_collision = rl.GetRayCollisionMesh(crosshair_ray, chunk_mesh, rl.MatrixIdentity());
+        var crosshair_ray_collision: rl.RayCollision = undefined;
+        var collision_chunk_index: u8 = undefined;
+        for (chunk_meshes) |mesh| {
+            crosshair_ray_collision = rl.GetRayCollisionMesh(crosshair_ray, mesh, rl.MatrixIdentity());
+        }
         const look_direction = lookDirection(crosshair_ray.direction);
 
         var target_block: BlockHit = undefined;
         if (crosshair_ray_collision.hit and crosshair_ray_collision.distance < crosshair_block_range) {
-            target_block = blockHitFromPoint(dense_map, crosshair_ray_collision.point);
+            target_block = blockHitFromPoint(&loaded_chunks[collision_chunk_index].block_data, crosshair_ray_collision.point);
 
             if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)) { // Break block
-                denseMapPut(dense_map, 0, @floatToInt(i16, target_block.coords.x), @floatToInt(i16, target_block.coords.y), @floatToInt(i16, target_block.coords.z));
+                denseMapPut(&loaded_chunks[collision_chunk_index].block_data, 0, @floatToInt(i16, target_block.coords.x), @floatToInt(i16, target_block.coords.y), @floatToInt(i16, target_block.coords.z));
+
+                // TODO(caleb): Only update mesh that changed.
 
                 // Update chunk mesh
-                unloadMesh(chunk_mesh);
+                for (chunk_meshes) |mesh| {
+                    unloadMesh(mesh);
+                }
                 mesh_fb_ally.reset();
-                chunk_mesh = try cullMesh(mesh_fb_ally.allocator(), dense_map, &sprite_sheet);
-                rl.UploadMesh(&chunk_mesh, false);
+                for (loaded_chunks, 0..) |chunk, chunk_index| {
+                    chunk_meshes[chunk_index] = cullMesh(mesh_fb_ally.allocator(), &chunk.block_data, &sprite_sheet) catch std.mem.zeroes(rl.Mesh);
+                    rl.UploadMesh(&chunk_meshes[chunk_index], false);
+                }
             } else if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_RIGHT)) { // Place block
                 var d_target_block_coords = rl.Vector3Zero();
                 switch (target_block.face) {
@@ -768,15 +911,17 @@ pub fn main() !void {
                     .near => d_target_block_coords = rl.Vector3{ .x = 0, .y = 0, .z = 1 },
                     .far => d_target_block_coords = rl.Vector3{ .x = 0, .y = 0, .z = -1 },
                 }
-
-                _ = worldToChunkCoords(Vector3I{ .x = @floatToInt(i32, target_block.coords.x + d_target_block_coords.x), .y = @floatToInt(i32, target_block.coords.y + d_target_block_coords.y), .z = @floatToInt(i32, target_block.coords.z + d_target_block_coords.z) });
-                denseMapPut(dense_map, 1, @floatToInt(i16, target_block.coords.x + d_target_block_coords.x), @floatToInt(i16, target_block.coords.y + d_target_block_coords.y), @floatToInt(i16, target_block.coords.z + d_target_block_coords.z));
+                denseMapPut(&loaded_chunks[collision_chunk_index].block_data, 1, @floatToInt(i16, target_block.coords.x + d_target_block_coords.x), @floatToInt(i16, target_block.coords.y + d_target_block_coords.y), @floatToInt(i16, target_block.coords.z + d_target_block_coords.z));
 
                 // Update chunk mesh
-                unloadMesh(chunk_mesh);
+                for (chunk_meshes) |mesh| {
+                    unloadMesh(mesh);
+                }
                 mesh_fb_ally.reset();
-                chunk_mesh = try cullMesh(mesh_fb_ally.allocator(), dense_map, &sprite_sheet);
-                rl.UploadMesh(&chunk_mesh, false);
+                for (loaded_chunks, 0..) |chunk, chunk_index| {
+                    chunk_meshes[chunk_index] = cullMesh(mesh_fb_ally.allocator(), &chunk.block_data, &sprite_sheet) catch std.mem.zeroes(rl.Mesh);
+                    rl.UploadMesh(&chunk_meshes[chunk_index], false);
+                }
             }
         }
 
@@ -793,8 +938,11 @@ pub fn main() !void {
         }
 
         // Only draw this mesh if it's within the view frustum
-        if (should_draw_chunk)
-            rl.DrawMesh(chunk_mesh, default_material, rl.MatrixIdentity());
+        if (should_draw_chunk) {
+            for (chunk_meshes) |mesh| {
+                rl.DrawMesh(mesh, default_material, rl.MatrixIdentity());
+            }
+        }
 
         rl.EndMode3D();
 
