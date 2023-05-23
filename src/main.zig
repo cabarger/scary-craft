@@ -1,4 +1,5 @@
 const std = @import("std");
+const scary_types = @import("scary_types.zig");
 
 const rl = @cImport({
     @cInclude("raylib.h");
@@ -6,6 +7,8 @@ const rl = @cImport({
     @cInclude("rcamera.h");
     @cInclude("rlgl.h");
 });
+
+const Vector3I = scary_types.Vector3I;
 
 const ArrayList = std.ArrayList;
 const AutoHashMap = std.AutoHashMap;
@@ -17,7 +20,7 @@ const hashString = std.hash_map.hashString;
 
 // TODO(caleb):
 // -----------------------------------------------------------------------------------
-// World space coords to chunk space coords function
+// Functional frustum culling ( do this when game gets slow? )
 // Player collision volume
 // Gravity/Jump
 
@@ -25,7 +28,7 @@ const hashString = std.hash_map.hashString;
 // INSERT SCARY ENEMY IDEAS HERE...
 
 const block_dim = rl.Vector3{ .x = 1, .y = 1, .z = 1 };
-const chunk_dim = rl.Vector3{ .x = 16, .y = 16, .z = 16 };
+const chunk_dim = Vector3I{ .x = 16, .y = 16, .z = 16 };
 
 const crosshair_thickness_in_pixels = 2;
 const crosshair_length_in_pixels = 20;
@@ -105,7 +108,7 @@ const PlaneIndex = enum(u8) {
 };
 
 const BlockHit = struct {
-    coords: rl.Vector3,
+    coords: rl.Vector3, // TODO(caleb): Vector3I
     face: PlaneIndex,
 };
 
@@ -216,6 +219,21 @@ const Direction = enum {
     backward,
 };
 
+const Chunk = struct {
+    BlockData: [chunk_dim.x * chunk_dim.y * chunk_dim.z]u8,
+};
+
+/// Given a block pos in world space, return the chunk space coords of the chunk containing this block.
+inline fn worldBlockToChunkCoords(block_pos: Vector3I) Vector3I {
+    var result: Vector3I = undefined;
+
+    result.x = @divFloor(block_pos.x, chunk_dim.x);
+    result.y = @divFloor(block_pos.y, chunk_dim.y);
+    result.z = @divFloor(block_pos.z, chunk_dim.z);
+
+    return result;
+}
+
 /// Unload mesh from memory (RAM and VRAM)
 fn unloadMesh(mesh: rl.Mesh) void {
 
@@ -244,20 +262,19 @@ fn updateLightValues(shader: rl.Shader, light: *Light) void {
 }
 
 inline fn denseMapPut(dense_map: []i16, val: i16, x: i16, y: i16, z: i16) void {
-    const map_width = @floatToInt(u16, chunk_dim.x);
-    const map_height = @floatToInt(u16, chunk_dim.y);
+    const map_width = @intCast(u16, chunk_dim.x);
+    const map_height = @intCast(u16, chunk_dim.y);
     dense_map[map_width * map_height * @intCast(u16, z) + @intCast(u16, y) * map_width + @intCast(u16, x)] = val;
 }
 
 inline fn denseMapLookup(dense_map: []i16, x: i16, y: i16, z: i16) ?i16 {
-    const map_width = @floatToInt(u16, chunk_dim.x);
-    const map_height = @floatToInt(u16, chunk_dim.y);
-    const map_length = @floatToInt(u16, chunk_dim.z);
-    if (x >= map_width or y >= map_height or z >= map_length or x < 0 or y < 0 or z < 0)
+    if (x >= chunk_dim.x or y >= chunk_dim.y or z >= chunk_dim.z or x < 0 or y < 0 or z < 0)
         return null; // Block index out of bounds.
-    return dense_map[map_width * map_height * @intCast(u16, z) + @intCast(u16, y) * map_width + @intCast(u16, x)];
+    return dense_map[@intCast(u16, chunk_dim.x * chunk_dim.y) * @intCast(u16, z) + @intCast(u16, y) * @intCast(u16, chunk_dim.x) + @intCast(u16, x)];
 }
 
+/// Given a ray collision point, figure out the the world space block coords of the block being
+/// selected and the face it is being selected from.
 fn blockHitFromPoint(dense_map: []i16, p: rl.Vector3) BlockHit {
     var result: BlockHit = undefined;
     const block_x = @floatToInt(i16, p.x + rl.EPSILON);
@@ -631,25 +648,34 @@ pub fn main() !void {
     camera.fovy = fovy;
     camera.projection = rl.CAMERA_PERSPECTIVE;
 
+    // TODO(caleb): Inititalize chunk map ( really going to act as a cache )
+    // var chunk_map = AutoHashMap(u64, Chunk).init;
+    // _ = chunk_map;
+
+    // Load 'A' amount of chunks when the player moves lookup chunks in 'B' radius and fill chunk slots.
+
+    var active_chunks = try arena_ally.allocator().alloc(Chunk, 10);
+    _ = active_chunks;
+
     // Create a chunk slice 16x16 at y = 0;
-    var dense_map = try arena_ally.allocator().alloc(i16, @floatToInt(i16, chunk_dim.x * chunk_dim.y * chunk_dim.z));
+    var dense_map = try arena_ally.allocator().alloc(i16, chunk_dim.x * chunk_dim.y * chunk_dim.z);
     for (dense_map) |*item|
         item.* = 0;
 
     var block_z: u16 = 0;
-    while (block_z < @floatToInt(i16, chunk_dim.z)) : (block_z += 1) {
+    while (block_z < chunk_dim.z) : (block_z += 1) {
         var block_x: u16 = 0;
-        while (block_x < @floatToInt(i16, chunk_dim.x)) : (block_x += 1) {
-            dense_map[@floatToInt(u16, chunk_dim.x * chunk_dim.y) * block_z + block_x] = 1;
+        while (block_x < chunk_dim.x) : (block_x += 1) {
+            dense_map[@intCast(u16, chunk_dim.x * chunk_dim.y) * block_z + block_x] = 1;
         }
     }
 
-    // Reserve 512Kb for a chunk mesh
-    var chunk_mem = try arena_ally.allocator().alloc(u8, 512 * 1024);
-    var chunk_fb_ally = FixedBufferAllocator.init(chunk_mem);
+    // Reserve 512Kb for mesh allocations
+    var mesh_mem = try arena_ally.allocator().alloc(u8, 512 * 1024);
+    var mesh_fb_ally = FixedBufferAllocator.init(mesh_mem);
 
     // Initial chunk mesh
-    var chunk_mesh = try cullMesh(chunk_fb_ally.allocator(), dense_map, &sprite_sheet);
+    var chunk_mesh = try cullMesh(mesh_fb_ally.allocator(), dense_map, &sprite_sheet);
     rl.UploadMesh(&chunk_mesh, false);
 
     while (!rl.WindowShouldClose()) {
@@ -710,23 +736,27 @@ pub fn main() !void {
 
                 // Update chunk mesh
                 unloadMesh(chunk_mesh);
-                chunk_fb_ally.reset();
-                chunk_mesh = try cullMesh(chunk_fb_ally.allocator(), dense_map, &sprite_sheet);
+                mesh_fb_ally.reset();
+                chunk_mesh = try cullMesh(mesh_fb_ally.allocator(), dense_map, &sprite_sheet);
                 rl.UploadMesh(&chunk_mesh, false);
             } else if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_RIGHT)) {
+                var d_target_block_coords = rl.Vector3Zero();
                 switch (target_block.face) {
-                    .top => denseMapPut(dense_map, 1, @floatToInt(i16, target_block.coords.x), @floatToInt(i16, target_block.coords.y) + 1, @floatToInt(i16, target_block.coords.z)),
-                    .bottom => denseMapPut(dense_map, 1, @floatToInt(i16, target_block.coords.x), @floatToInt(i16, target_block.coords.y) - 1, @floatToInt(i16, target_block.coords.z)),
-                    .left => denseMapPut(dense_map, 1, @floatToInt(i16, target_block.coords.x) - 1, @floatToInt(i16, target_block.coords.y), @floatToInt(i16, target_block.coords.z)),
-                    .right => denseMapPut(dense_map, 1, @floatToInt(i16, target_block.coords.x) + 1, @floatToInt(i16, target_block.coords.y), @floatToInt(i16, target_block.coords.z)),
-                    .near => denseMapPut(dense_map, 1, @floatToInt(i16, target_block.coords.x), @floatToInt(i16, target_block.coords.y), @floatToInt(i16, target_block.coords.z) + 1),
-                    .far => denseMapPut(dense_map, 1, @floatToInt(i16, target_block.coords.x), @floatToInt(i16, target_block.coords.y), @floatToInt(i16, target_block.coords.z) - 1),
+                    .top => d_target_block_coords = rl.Vector3{ .x = 0, .y = 1, .z = 0 },
+                    .bottom => d_target_block_coords = rl.Vector3{ .x = 0, .y = -1, .z = 0 },
+                    .left => d_target_block_coords = rl.Vector3{ .x = -1, .y = 0, .z = 0 },
+                    .right => d_target_block_coords = rl.Vector3{ .x = 1, .y = 0, .z = 0 },
+                    .near => d_target_block_coords = rl.Vector3{ .x = 0, .y = 0, .z = 1 },
+                    .far => d_target_block_coords = rl.Vector3{ .x = 0, .y = 0, .z = -1 },
                 }
+
+                _ = worldBlockToChunkCoords(Vector3I{ .x = @floatToInt(i32, target_block.coords.x + d_target_block_coords.x), .y = @floatToInt(i32, target_block.coords.y + d_target_block_coords.y), .z = @floatToInt(i32, target_block.coords.z + d_target_block_coords.z) });
+                denseMapPut(dense_map, 1, @floatToInt(i16, target_block.coords.x + d_target_block_coords.x), @floatToInt(i16, target_block.coords.y + d_target_block_coords.y) + 1, @floatToInt(i16, target_block.coords.z + d_target_block_coords.z));
 
                 // Update chunk mesh
                 unloadMesh(chunk_mesh);
-                chunk_fb_ally.reset();
-                chunk_mesh = try cullMesh(chunk_fb_ally.allocator(), dense_map, &sprite_sheet);
+                mesh_fb_ally.reset();
+                chunk_mesh = try cullMesh(mesh_fb_ally.allocator(), dense_map, &sprite_sheet);
                 rl.UploadMesh(&chunk_mesh, false);
             }
         }
@@ -736,7 +766,7 @@ pub fn main() !void {
         rl.BeginMode3D(camera);
 
         const frustum = extractFrustum(&camera, aspect);
-        var chunk_box = AABB{ .min = rl.Vector3Zero(), .max = rl.Vector3Add(rl.Vector3Zero(), chunk_dim) };
+        var chunk_box = AABB{ .min = rl.Vector3Zero(), .max = rl.Vector3Add(rl.Vector3Zero(), rl.Vector3{ .x = @intToFloat(f32, chunk_dim.x), .y = @intToFloat(f32, chunk_dim.x), .z = @intToFloat(f32, chunk_dim.x) }) };
 
         var should_draw_chunk = false;
         if (frustum.containsAABB(&chunk_box)) { // FIXME(caleb): This is still borked...
