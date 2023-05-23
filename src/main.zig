@@ -1,4 +1,5 @@
 const std = @import("std");
+const debug = std.debug;
 const scary_types = @import("scary_types.zig");
 
 const rl = @cImport({
@@ -29,20 +30,21 @@ const hashString = std.hash_map.hashString;
 
 const block_dim = rl.Vector3{ .x = 1, .y = 1, .z = 1 };
 const chunk_dim = Vector3I{ .x = 16, .y = 16, .z = 16 };
+const meters_per_block = 1;
 
 const crosshair_thickness_in_pixels = 2;
 const crosshair_length_in_pixels = 20;
 
+const target_fps = 120;
 const fovy = 60.0;
-const target_range_in_blocks = 4;
-const meters_per_block = 1;
+const crosshair_block_range = 4;
 const move_speed_blocks_per_second = 3;
 const mouse_sens = 0.1;
 
 const font_size = 20;
 const font_spacing = 2;
 
-const target_fps = 120;
+const loaded_chunk_capacity = 20;
 
 const SpriteSheet = struct {
     columns: u16,
@@ -111,6 +113,23 @@ const BlockHit = struct {
     coords: rl.Vector3, // TODO(caleb): Vector3I
     face: PlaneIndex,
 };
+
+/// Load 'loaded_chunk_capacity' chunks into active_chunks around the player.
+fn loadChunks(chunk_map: *AutoHashMap(u64, Chunk), loaded_chunks: []*Chunk, player_pos: Vector3I) void {
+    var loaded_chunk_count = 0;
+
+    // 1) Get the chunk corosponding to player_pos
+    const player_chunk_coords = worldToChunkCoords(player_pos);
+
+    var chunk_hash_buf: [128]u8 = undefined;
+    const player_chunk_coords_str = std.fmt.bufPrint(&chunk_hash_buf, "{d}{d}{d}", player_chunk_coords.x, player_chunk_coords.y, player_chunk_coords.z);
+    var current_chunk_ptr = chunk_map.getPtr(hashString(player_chunk_coords_str)) orelse unreachable; // TODO(caleb): Handle not having a chunk that would be at player pos.
+    loaded_chunks[loaded_chunk_count] = current_chunk_ptr;
+
+    // 2) Given a chunk coord get me the chunk data can I store this in the chunk_map?
+
+    // 3) Load this chunk into active_chunks
+}
 
 /// Gribb-Hartmann viewing frustum extraction.
 fn extractFrustum(camera: *rl.Camera, aspect: f32) Frustum {
@@ -223,14 +242,12 @@ const Chunk = struct {
     BlockData: [chunk_dim.x * chunk_dim.y * chunk_dim.z]u8,
 };
 
-/// Given a block pos in world space, return the chunk space coords of the chunk containing this block.
-inline fn worldBlockToChunkCoords(block_pos: Vector3I) Vector3I {
+/// Given a pos in world space, return the eqv. chunk space coords.
+inline fn worldToChunkCoords(pos: Vector3I) Vector3I {
     var result: Vector3I = undefined;
-
-    result.x = @divFloor(block_pos.x, chunk_dim.x);
-    result.y = @divFloor(block_pos.y, chunk_dim.y);
-    result.z = @divFloor(block_pos.z, chunk_dim.z);
-
+    result.x = @divFloor(pos.x, chunk_dim.x);
+    result.y = @divFloor(pos.y, chunk_dim.y);
+    result.z = @divFloor(pos.z, chunk_dim.z);
     return result;
 }
 
@@ -262,9 +279,7 @@ fn updateLightValues(shader: rl.Shader, light: *Light) void {
 }
 
 inline fn denseMapPut(dense_map: []i16, val: i16, x: i16, y: i16, z: i16) void {
-    const map_width = @intCast(u16, chunk_dim.x);
-    const map_height = @intCast(u16, chunk_dim.y);
-    dense_map[map_width * map_height * @intCast(u16, z) + @intCast(u16, y) * map_width + @intCast(u16, x)] = val;
+    dense_map[@intCast(u16, chunk_dim.x * chunk_dim.y) * @intCast(u16, z) + @intCast(u16, y) * @intCast(u16, chunk_dim.x) + @intCast(u16, x)] = val;
 }
 
 inline fn denseMapLookup(dense_map: []i16, x: i16, y: i16, z: i16) ?i16 {
@@ -313,11 +328,13 @@ fn blockHitFromPoint(dense_map: []i16, p: rl.Vector3) BlockHit {
                 };
                 if (std.math.approxEqAbs(f32, plane.distanceToPoint(p), 0, rl.EPSILON)) {
                     result.face = PlaneIndex.far;
-                } else unreachable;
+                } else unreachable; // NOTE(caleb): This was reacached after flying far away and looking at a block.
             }
         }
         result.coords = rl.Vector3{ .x = @intToFloat(f32, block_x), .y = @intToFloat(f32, block_y), .z = @intToFloat(f32, block_z) };
     } else {
+        debug.print("{d}\n", .{@round(p.y)});
+        debug.print("{d:.6}\n", .{p.y}); //std.math.approxEqRel(f32, @round(p.y), p.y, rl.EPSILON);
         if (std.math.approxEqRel(f32, @round(p.x), p.x, rl.EPSILON)) { // Right face
             result.coords = rl.Vector3{ .x = @intToFloat(f32, block_x - 1), .y = @intToFloat(f32, block_y), .z = @intToFloat(f32, block_z) };
             result.face = PlaneIndex.right;
@@ -418,7 +435,6 @@ fn cullMesh(ally: Allocator, dense_map: []i16, sprite_sheet: *SpriteSheet) !rl.M
     const dirt_texcoord_end_x = dirt_texcoord_start_x + 128 / @intToFloat(f32, sprite_sheet.texture.width);
     const dirt_texcoord_start_y = 128 * @intToFloat(f32, dirt_tile_row) / @intToFloat(f32, sprite_sheet.texture.height);
     const dirt_texcoord_end_y = dirt_texcoord_start_y + 128 / @intToFloat(f32, sprite_sheet.texture.height);
-
     {
         var block_y: f32 = 0;
         while (block_y < chunk_dim.y) : (block_y += 1) {
@@ -648,34 +664,37 @@ pub fn main() !void {
     camera.fovy = fovy;
     camera.projection = rl.CAMERA_PERSPECTIVE;
 
-    // TODO(caleb): Inititalize chunk map ( really going to act as a cache )
-    // var chunk_map = AutoHashMap(u64, Chunk).init;
-    // _ = chunk_map;
-
-    // Load 'A' amount of chunks when the player moves lookup chunks in 'B' radius and fill chunk slots.
-
-    var active_chunks = try arena_ally.allocator().alloc(Chunk, 10);
-    _ = active_chunks;
+    var chunk_map = AutoHashMap(u64, Chunk).init(arena_ally.allocator());
+    try chunk_map.ensureTotalCapacity(loaded_chunk_capacity);
 
     // Create a chunk slice 16x16 at y = 0;
-    var dense_map = try arena_ally.allocator().alloc(i16, chunk_dim.x * chunk_dim.y * chunk_dim.z);
-    for (dense_map) |*item|
-        item.* = 0;
+    var test_chunk: Chunk = undefined;
+    for (test_chunk.BlockData) |*value|
+        value.* = 0;
 
     var block_z: u16 = 0;
     while (block_z < chunk_dim.z) : (block_z += 1) {
         var block_x: u16 = 0;
         while (block_x < chunk_dim.x) : (block_x += 1) {
-            dense_map[@intCast(u16, chunk_dim.x * chunk_dim.y) * block_z + block_x] = 1;
+            test_chunk.BlockData[@intCast(u16, chunk_dim.x * chunk_dim.y) * block_z + block_x] = 1;
         }
     }
+
+    // Insert test chunk into map
+    var chunk_hash_buf: [128]u8 = undefined;
+    var player_chunk_coords = worldToChunkCoords(camera.position);
+    const player_chunk_coords_str = std.fmt.bufPrint(&chunk_hash_buf, "{d}{d}{d}", player_chunk_coords.x, player_chunk_coords.y, player_chunk_coords.z);
+    chunk_map.putAssumeCapacity(hashString(player_chunk_coords_str), test_chunk);
+
+    var loaded_chunks: [loaded_chunk_capacity]*Chunk = undefined;
+    loadChunks(&chunk_map, &loaded_chunks, camera.position);
 
     // Reserve 512Kb for mesh allocations
     var mesh_mem = try arena_ally.allocator().alloc(u8, 512 * 1024);
     var mesh_fb_ally = FixedBufferAllocator.init(mesh_mem);
 
     // Initial chunk mesh
-    var chunk_mesh = try cullMesh(mesh_fb_ally.allocator(), dense_map, &sprite_sheet);
+    var chunk_mesh = try cullMesh(mesh_fb_ally.allocator(), test_chunk.BlockData, &sprite_sheet);
     rl.UploadMesh(&chunk_mesh, false);
 
     while (!rl.WindowShouldClose()) {
@@ -728,7 +747,7 @@ pub fn main() !void {
         const look_direction = lookDirection(crosshair_ray.direction);
 
         var target_block: BlockHit = undefined;
-        if (crosshair_ray_collision.hit) {
+        if (crosshair_ray_collision.hit and crosshair_ray_collision.distance < crosshair_block_range) {
             target_block = blockHitFromPoint(dense_map, crosshair_ray_collision.point);
 
             if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)) { // Break block
@@ -739,7 +758,7 @@ pub fn main() !void {
                 mesh_fb_ally.reset();
                 chunk_mesh = try cullMesh(mesh_fb_ally.allocator(), dense_map, &sprite_sheet);
                 rl.UploadMesh(&chunk_mesh, false);
-            } else if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_RIGHT)) {
+            } else if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_RIGHT)) { // Place block
                 var d_target_block_coords = rl.Vector3Zero();
                 switch (target_block.face) {
                     .top => d_target_block_coords = rl.Vector3{ .x = 0, .y = 1, .z = 0 },
@@ -750,8 +769,8 @@ pub fn main() !void {
                     .far => d_target_block_coords = rl.Vector3{ .x = 0, .y = 0, .z = -1 },
                 }
 
-                _ = worldBlockToChunkCoords(Vector3I{ .x = @floatToInt(i32, target_block.coords.x + d_target_block_coords.x), .y = @floatToInt(i32, target_block.coords.y + d_target_block_coords.y), .z = @floatToInt(i32, target_block.coords.z + d_target_block_coords.z) });
-                denseMapPut(dense_map, 1, @floatToInt(i16, target_block.coords.x + d_target_block_coords.x), @floatToInt(i16, target_block.coords.y + d_target_block_coords.y) + 1, @floatToInt(i16, target_block.coords.z + d_target_block_coords.z));
+                _ = worldToChunkCoords(Vector3I{ .x = @floatToInt(i32, target_block.coords.x + d_target_block_coords.x), .y = @floatToInt(i32, target_block.coords.y + d_target_block_coords.y), .z = @floatToInt(i32, target_block.coords.z + d_target_block_coords.z) });
+                denseMapPut(dense_map, 1, @floatToInt(i16, target_block.coords.x + d_target_block_coords.x), @floatToInt(i16, target_block.coords.y + d_target_block_coords.y), @floatToInt(i16, target_block.coords.z + d_target_block_coords.z));
 
                 // Update chunk mesh
                 unloadMesh(chunk_mesh);
@@ -786,26 +805,32 @@ pub fn main() !void {
 
         if (debug_text_info) {
             var strz_buffer: [256]u8 = undefined;
+            var y_offset: f32 = 0;
             const fps_strz = try std.fmt.bufPrintZ(&strz_buffer, "FPS:{d}", .{rl.GetFPS()});
-            const fps_strz_dim = rl.MeasureTextEx(font, @ptrCast([*c]const u8, fps_strz), font_size, font_spacing);
             rl.DrawTextEx(font, @ptrCast([*c]const u8, fps_strz), rl.Vector2{ .x = 0, .y = 0 }, font_size, font_spacing, rl.WHITE);
+            y_offset += rl.MeasureTextEx(font, @ptrCast([*c]const u8, fps_strz), font_size, font_spacing).y;
 
-            const camera_pos_strz = try std.fmt.bufPrintZ(&strz_buffer, "camera pos: (x:{d:.2}, y:{d:.2}, z:{d:.2})", .{ camera.position.x, camera.position.y, camera.position.z });
-            const camera_pos_strz_dim = rl.MeasureTextEx(font, @ptrCast([*c]const u8, camera_pos_strz), font_size, font_spacing);
-            rl.DrawTextEx(font, @ptrCast([*c]const u8, camera_pos_strz), rl.Vector2{ .x = 0, .y = fps_strz_dim.y }, font_size, font_spacing, rl.WHITE);
+            const camera_pos_strz = try std.fmt.bufPrintZ(&strz_buffer, "Player position: (x:{d:.2}, y:{d:.2}, z:{d:.2})", .{ camera.position.x, camera.position.y, camera.position.z });
+            rl.DrawTextEx(font, @ptrCast([*c]const u8, camera_pos_strz), rl.Vector2{ .x = 0, .y = y_offset }, font_size, font_spacing, rl.WHITE);
+            y_offset += rl.MeasureTextEx(font, @ptrCast([*c]const u8, camera_pos_strz), font_size, font_spacing).y;
 
-            var target_block_point_strz = try std.fmt.bufPrintZ(&strz_buffer, "No collision", .{});
-            var target_block_point_strz_dim = rl.MeasureTextEx(font, @ptrCast([*c]const u8, target_block_point_strz), font_size, font_spacing);
-            if (crosshair_ray_collision.hit) {
-                target_block_point_strz = try std.fmt.bufPrintZ(&strz_buffer, "Target block: (x:{d:.2}, y:{d:.2}, z:{d:.2})", .{ target_block.coords.x, target_block.coords.y, target_block.coords.z });
-                target_block_point_strz_dim = rl.MeasureTextEx(font, @ptrCast([*c]const u8, target_block_point_strz), font_size, font_spacing);
+            if (crosshair_ray_collision.hit and crosshair_ray_collision.distance < crosshair_block_range) {
+                const target_block_point_strz = try std.fmt.bufPrintZ(&strz_buffer, "Target block: (x:{d:.2}, y:{d:.2}, z:{d:.2})", .{ target_block.coords.x, target_block.coords.y, target_block.coords.z });
+                rl.DrawTextEx(font, @ptrCast([*c]const u8, target_block_point_strz), rl.Vector2{ .x = 0, .y = y_offset }, font_size, font_spacing, rl.WHITE);
+                y_offset += rl.MeasureTextEx(font, @ptrCast([*c]const u8, target_block_point_strz), font_size, font_spacing).y;
+
+                const target_block_face_strz = try std.fmt.bufPrintZ(&strz_buffer, "Target block face: {s}", .{@tagName(target_block.face)});
+                rl.DrawTextEx(font, @ptrCast([*c]const u8, target_block_face_strz), rl.Vector2{ .x = 0, .y = y_offset }, font_size, font_spacing, rl.WHITE);
+                y_offset += rl.MeasureTextEx(font, @ptrCast([*c]const u8, target_block_face_strz), font_size, font_spacing).y;
+            } else {
+                const no_target_block_strz = try std.fmt.bufPrintZ(&strz_buffer, "No target block", .{});
+                rl.DrawTextEx(font, @ptrCast([*c]const u8, no_target_block_strz), rl.Vector2{ .x = 0, .y = y_offset }, font_size, font_spacing, rl.WHITE);
+                y_offset += rl.MeasureTextEx(font, @ptrCast([*c]const u8, no_target_block_strz), font_size, font_spacing).y;
             }
-            rl.DrawTextEx(font, @ptrCast([*c]const u8, target_block_point_strz), rl.Vector2{ .x = 0, .y = fps_strz_dim.y + camera_pos_strz_dim.y }, font_size, font_spacing, rl.WHITE);
 
             const look_direction_strz = try std.fmt.bufPrintZ(&strz_buffer, "Look direction: {s}", .{@tagName(look_direction)});
-            const look_direction_strz_dim = rl.MeasureTextEx(font, @ptrCast([*c]const u8, look_direction_strz), font_size, font_spacing);
-            _ = look_direction_strz_dim;
-            rl.DrawTextEx(font, @ptrCast([*c]const u8, look_direction_strz), rl.Vector2{ .x = 0, .y = fps_strz_dim.y + camera_pos_strz_dim.y + target_block_point_strz_dim.y }, font_size, font_spacing, rl.WHITE);
+            rl.DrawTextEx(font, @ptrCast([*c]const u8, look_direction_strz), rl.Vector2{ .x = 0, .y = y_offset }, font_size, font_spacing, rl.WHITE);
+            // y_offset += rl.MeasureTextEx(font, @ptrCast([*c]const u8, look_direction_strz), font_size, font_spacing);
         }
 
         rl.EndDrawing();
