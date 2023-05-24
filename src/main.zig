@@ -1,5 +1,4 @@
 const std = @import("std");
-const debug = std.debug;
 const scary_types = @import("scary_types.zig");
 
 const rl = @cImport({
@@ -8,6 +7,9 @@ const rl = @cImport({
     @cInclude("rcamera.h");
     @cInclude("rlgl.h");
 });
+
+const Chunk = @import("Chunk.zig");
+const World = @import("World.zig");
 
 const ArrayList = std.ArrayList;
 const AutoHashMap = std.AutoHashMap;
@@ -31,7 +33,6 @@ const hashString = std.hash_map.hashString;
 // INSERT SCARY ENEMY IDEAS HERE...
 
 const block_dim = rl.Vector3{ .x = 1, .y = 1, .z = 1 };
-const chunk_dim = Vector3(i32){ .x = 16, .y = 16, .z = 16 };
 const meters_per_block = 1;
 
 const crosshair_thickness_in_pixels = 2;
@@ -45,43 +46,6 @@ const mouse_sens = 0.1;
 
 const font_size = 20;
 const font_spacing = 2;
-
-const loaded_chunk_capacity = 20;
-
-const WorldSaveHeader = packed struct {
-    chunk_count: u32,
-};
-
-const WorldSaveChunk = packed struct {
-    id: u32, // NOTE(caleb): This will act as an index into the world save.
-    coords: Vector3(i32),
-};
-
-fn cstFoundTarget(a: WorldSaveChunk, b: WorldSaveChunk) bool {
-    return a.coords.equals(b.coords);
-}
-
-fn cstGoLeft(a: WorldSaveChunk, b: WorldSaveChunk) bool {
-    var check_left: bool = undefined;
-    if (a.coords.x < b.coords.x) { // Check x coords
-        check_left = true;
-    } else if (a.coords.x > b.coords.x) {
-        check_left = false;
-    } else { // X coord is equal check y
-        if (a.coords.y < b.coords.y) {
-            check_left = true;
-        } else if (a.coords.y > b.coords.y) {
-            check_left = false;
-        } else { // Y coord is equal check z
-            if (a.coords.z < b.coords.z) {
-                check_left = true;
-            } else if (a.coords.z > b.coords.z) {
-                check_left = false;
-            } else unreachable;
-        }
-    }
-    return check_left;
-}
 
 const SpriteSheet = struct {
     columns: u16,
@@ -150,88 +114,6 @@ const BlockHit = struct {
     coords: rl.Vector3, // TODO(caleb): Vector3(i32)
     face: PlaneIndex,
 };
-
-const d_chunk_coordses = [_]Vector3(i32){
-    Vector3(i32){ .x = 0, .y = 1, .z = 0 },
-    Vector3(i32){ .x = 0, .y = -1, .z = 0 },
-    Vector3(i32){ .x = -1, .y = 0, .z = 0 },
-    Vector3(i32){ .x = 1, .y = 0, .z = 0 },
-    Vector3(i32){ .x = 0, .y = 0, .z = -1 },
-    Vector3(i32){ .x = 0, .y = 0, .z = 1 },
-};
-
-fn queueChunks(
-    load_queue: *SmolQ(Vector3(i32), loaded_chunk_capacity),
-    current_chunk_coords: Vector3(i32),
-    loaded_chunks: []*Chunk,
-    loaded_chunk_count: u8,
-) void {
-    outer: for (d_chunk_coordses) |d_chunk_coords| {
-        if (load_queue.len + 1 > loaded_chunk_capacity - loaded_chunk_count) return;
-        const next_chunk_coords = current_chunk_coords.add(d_chunk_coords);
-
-        // Next chunk coords don't exist in either load queue or loaded chunks
-        for (load_queue.items[0..load_queue.len]) |chunk_coords|
-            if (next_chunk_coords.equals(chunk_coords)) continue :outer;
-        for (loaded_chunks[0..loaded_chunk_count]) |chunk|
-            if (next_chunk_coords.equals(chunk.coords)) continue :outer;
-        load_queue.pushAssumeCapacity(next_chunk_coords);
-    }
-}
-
-/// Load 'loaded_chunk_capacity' chunks into active_chunks around the player.
-fn loadChunks(
-    chunk_search_tree: *BST(WorldSaveChunk, cstGoLeft, cstFoundTarget),
-    chunk_map: *AutoHashMap(u64, Chunk),
-    loaded_chunks: []*Chunk,
-    player_pos: Vector3(i32),
-) !void {
-    var loaded_chunk_count: u8 = 0;
-    var current_chunk_ptr: *Chunk = undefined;
-    var chunk_coords: Vector3(i32) = undefined;
-    var chunk_hash_buf: [128]u8 = undefined;
-    var chunk_coords_str: []u8 = undefined;
-
-    var load_queue = SmolQ(Vector3(i32), loaded_chunk_capacity){
-        .items = undefined,
-        .len = 0,
-    };
-
-    chunk_coords = worldToChunkCoords(player_pos); // Start chunk coords
-    while (loaded_chunk_count < loaded_chunk_capacity) {
-        queueChunks(&load_queue, chunk_coords, loaded_chunks, loaded_chunk_count);
-        chunk_coords = load_queue.popAssumeNotEmpty();
-        chunk_coords_str = try std.fmt.bufPrint(&chunk_hash_buf, "{d}{d}{d}", .{ chunk_coords.x, chunk_coords.y, chunk_coords.z });
-        current_chunk_ptr = chunk_map.getPtr(hashString(chunk_coords_str)) orelse blk: { // Chunk not in map.
-            var world_chunk: Chunk = undefined;
-
-            const world_chunk_node = chunk_search_tree.search(.{ .id = 0, .coords = chunk_coords });
-            if (world_chunk_node == null) { // Chunk isn't on disk. Initialize a new chunk.
-                world_chunk.coords = chunk_coords;
-                // NOTE(caleb): Chunk id is assigned either on world save or on chunk map eviction
-                //     a value of 0 indicates that it needs a new entry in the save file.
-                world_chunk.id = 0;
-                for (&world_chunk.block_data) |*block| block.* = 0;
-            } else { // Use save chunk's id to retrive from disk
-                const world_save_file = try std.fs.cwd().openFile("data/world.sav", .{});
-                defer world_save_file.close();
-                const world_save_reader = world_save_file.reader();
-                try world_save_reader.skipBytes(@sizeOf(WorldSaveHeader), .{});
-                try world_save_reader.skipBytes((@sizeOf(WorldSaveChunk) + @intCast(u32, chunk_dim.x) * @intCast(u32, chunk_dim.y) * @intCast(i32, chunk_dim.z)) * (world_chunk_node.?.id - 1), .{});
-                const world_save_chunk = try world_save_reader.readStruct(WorldSaveChunk);
-                world_chunk.id = world_save_chunk.id;
-                world_chunk.coords = world_save_chunk.coords;
-                world_chunk.block_data = try world_save_reader.readBytesNoEof(chunk_dim.x * chunk_dim.y * chunk_dim.z);
-            }
-
-            // TODO(caleb): Handle purging chunks from chunk map
-            chunk_map.putAssumeCapacityNoClobber(hashString(chunk_coords_str), world_chunk);
-            break :blk chunk_map.getPtr(hashString(chunk_coords_str)) orelse unreachable;
-        };
-        loaded_chunks[loaded_chunk_count] = current_chunk_ptr;
-        loaded_chunk_count += 1;
-    }
-}
 
 /// Gribb-Hartmann viewing frustum extraction.
 fn extractFrustum(camera: *rl.Camera, aspect: f32) Frustum {
@@ -339,41 +221,6 @@ const Direction = enum {
     forward,
     backward,
 };
-
-const Chunk = struct {
-    id: u32,
-    coords: Vector3(i32),
-    block_data: [chunk_dim.x * chunk_dim.y * chunk_dim.z]u8,
-
-    /// Sets block id at chunk relative coords (x, y, z)
-    pub inline fn put(this: *Chunk, val: u8, x: u8, y: u8, z: u8) void {
-        this.block_data[@intCast(u16, chunk_dim.x * chunk_dim.y) * z + y * @intCast(u16, chunk_dim.x) + x] = val;
-    }
-
-    /// Return block id at chunk relative coords (x, y, z)
-    pub inline fn fetch(this: *const Chunk, x: u8, y: u8, z: u8) u8 {
-        var result: u8 = undefined;
-        result = this.block_data[@intCast(u16, chunk_dim.x * chunk_dim.y) * z + y * @intCast(u16, chunk_dim.x) + x];
-        return result;
-    }
-
-    /// Return's a world save chunk from this chunk's id and coords.
-    pub inline fn toWorldSaveChunk(this: *Chunk) WorldSaveChunk {
-        return WorldSaveChunk{
-            .id = this.id,
-            .coords = this.coords,
-        };
-    }
-};
-
-/// Given a pos in world space, return the eqv. chunk space coords.
-inline fn worldToChunkCoords(pos: Vector3(i32)) Vector3(i32) {
-    var result: Vector3(i32) = undefined;
-    result.x = @divFloor(pos.x, chunk_dim.x);
-    result.y = @divFloor(pos.y, chunk_dim.y);
-    result.z = @divFloor(pos.z, chunk_dim.z);
-    return result;
-}
 
 /// Unload mesh from memory (RAM and VRAM)
 fn unloadMesh(mesh: rl.Mesh) void {
@@ -490,7 +337,7 @@ inline fn setVertex3f(verticies: []f32, verticies_offset: *u32, x: f32, y: f32, 
 
 inline fn isSolidBlock(dense_map: []u8, x: i16, y: i16, z: i16) bool {
     var result = false;
-    if (dense_map[@intCast(u16, chunk_dim.x * chunk_dim.y) * @intCast(u8, z) + @intCast(u8, y) * @intCast(u16, chunk_dim.x) + @intCast(u8, x)] != 0) {
+    if (dense_map[@intCast(u16, Chunk.dim.x * Chunk.dim.y) * @intCast(u8, z) + @intCast(u8, y) * @intCast(u16, Chunk.dim.x) + @intCast(u8, x)] != 0) {
         result = true;
     }
     return result;
@@ -502,12 +349,12 @@ fn cullMesh(ally: Allocator, dense_map: []u8, sprite_sheet: *SpriteSheet) !rl.Me
     var face_count: c_int = 0;
     {
         var block_y: f32 = 0;
-        while (block_y < chunk_dim.y) : (block_y += 1) {
+        while (block_y < Chunk.dim.y) : (block_y += 1) {
             var block_z: f32 = 0;
-            while (block_z < chunk_dim.z) : (block_z += 1) {
+            while (block_z < Chunk.dim.z) : (block_z += 1) {
                 var block_x: f32 = 0;
-                while (block_x < chunk_dim.x) : (block_x += 1) {
-                    const curr_block = dense_map[@intCast(u16, chunk_dim.x * chunk_dim.y) * @floatToInt(u8, block_z) + @floatToInt(u8, block_y) * @intCast(u16, chunk_dim.x) + @floatToInt(u8, block_x)];
+                while (block_x < Chunk.dim.x) : (block_x += 1) {
+                    const curr_block = dense_map[@intCast(u16, Chunk.dim.x * Chunk.dim.y) * @floatToInt(u8, block_z) + @floatToInt(u8, block_y) * @intCast(u16, Chunk.dim.x) + @floatToInt(u8, block_x)];
                     if (curr_block == 0)
                         continue;
                     face_count += if (!isSolidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y + 1), @floatToInt(i16, block_z))) 1 else 0; // Top face
@@ -549,12 +396,12 @@ fn cullMesh(ally: Allocator, dense_map: []u8, sprite_sheet: *SpriteSheet) !rl.Me
     const dirt_texcoord_end_y = dirt_texcoord_start_y + 128 / @intToFloat(f32, sprite_sheet.texture.height);
     {
         var block_y: f32 = 0;
-        while (block_y < chunk_dim.y) : (block_y += 1) {
+        while (block_y < Chunk.dim.y) : (block_y += 1) {
             var block_z: f32 = 0;
-            while (block_z < chunk_dim.z) : (block_z += 1) {
+            while (block_z < Chunk.dim.z) : (block_z += 1) {
                 var block_x: f32 = 0;
-                while (block_x < chunk_dim.x) : (block_x += 1) {
-                    const curr_block = dense_map[@intCast(u16, chunk_dim.x * chunk_dim.y) * @floatToInt(u8, block_z) + @floatToInt(u8, block_y) * @intCast(u16, chunk_dim.x) + @floatToInt(u8, block_x)];
+                while (block_x < Chunk.dim.x) : (block_x += 1) {
+                    const curr_block = dense_map[@intCast(u16, Chunk.dim.x * Chunk.dim.y) * @floatToInt(u8, block_z) + @floatToInt(u8, block_y) * @intCast(u16, Chunk.dim.x) + @floatToInt(u8, block_x)];
                     if (curr_block == 0) // No block here so don't worry about writing mesh data
                         continue;
 
@@ -776,61 +623,16 @@ pub fn main() !void {
     camera.fovy = fovy;
     camera.projection = rl.CAMERA_PERSPECTIVE;
 
-    // NOTE(caleb): This block is just creating a dummy world save
-    {
-        const world_save_file = try std.fs.cwd().createFile("data/world.sav", .{ .truncate = true });
-        defer world_save_file.close();
-
-        const world_save_header = WorldSaveHeader{ .chunk_count = 1 };
-
-        // Create a chunk slice 16x16 at y = 0;
-        var test_chunk: Chunk = undefined;
-        test_chunk.coords = Vector3(i32){ .x = 0, .y = 0, .z = 0 };
-        test_chunk.id = 1;
-        for (&test_chunk.block_data) |*byte| byte.* = 0;
-
-        var block_z: u8 = 0;
-        while (block_z < chunk_dim.z) : (block_z += 1) {
-            var block_x: u8 = 0;
-            while (block_x < chunk_dim.x) : (block_x += 1) {
-                test_chunk.put(1, block_x, 0, block_z);
-            }
-        }
-
-        const world_save_writer = world_save_file.writer();
-        try world_save_writer.writeStruct(world_save_header);
-        try world_save_writer.writeStruct(test_chunk.toWorldSaveChunk());
-        try world_save_writer.writeAll(&test_chunk.block_data);
-    }
-
-    var chunk_search_tree = BST(WorldSaveChunk, cstGoLeft, cstFoundTarget).init(arena_ally.allocator());
-    {
-        const world_save_file = try std.fs.cwd().openFile("data/world.sav", .{});
-        defer world_save_file.close();
-        const save_file_reader = world_save_file.reader();
-        const world_save_header = try save_file_reader.readStruct(WorldSaveHeader);
-        for (0..world_save_header.chunk_count) |_| {
-            const world_save_chunk = try save_file_reader.readStruct(WorldSaveChunk);
-            try chunk_search_tree.insert(world_save_chunk);
-        }
-    }
-
-    var chunk_map = AutoHashMap(u64, Chunk).init(arena_ally.allocator());
-    try chunk_map.ensureTotalCapacity(loaded_chunk_capacity);
-
-    var loaded_chunks: [loaded_chunk_capacity]*Chunk = undefined;
-    try loadChunks(&chunk_search_tree, &chunk_map, &loaded_chunks, Vector3(i32){
-        .x = @floatToInt(i32, camera.position.x),
-        .y = @floatToInt(i32, camera.position.y),
-        .z = @floatToInt(i32, camera.position.z),
-    });
+    try World.writeDummySave("data/world.sav");
+    var world = World.init(arena_ally.allocator());
+    try world.loadSave("data/world.sav");
 
     // Reserve 512Kb for mesh allocations
     var mesh_mem = try arena_ally.allocator().alloc(u8, 512 * 1024);
     var mesh_fb_ally = FixedBufferAllocator.init(mesh_mem);
 
-    var chunk_meshes: [loaded_chunk_capacity]rl.Mesh = undefined;
-    for (loaded_chunks, 0..) |chunk, chunk_index| {
+    var chunk_meshes: [World.loaded_chunk_capacity]rl.Mesh = undefined;
+    for (world.loaded_chunks, 0..) |chunk, chunk_index| {
         chunk_meshes[chunk_index] = cullMesh(mesh_fb_ally.allocator(), &chunk.block_data, &sprite_sheet) catch std.mem.zeroes(rl.Mesh);
         rl.UploadMesh(&chunk_meshes[chunk_index], false);
     }
@@ -890,7 +692,7 @@ pub fn main() !void {
 
         var target_block: BlockHit = undefined;
         if (crosshair_ray_collision.hit and crosshair_ray_collision.distance < crosshair_block_range) {
-            target_block = blockHitFromPoint(loaded_chunks[collision_chunk_index], crosshair_ray_collision.point);
+            target_block = blockHitFromPoint(world.loaded_chunks[collision_chunk_index], crosshair_ray_collision.point);
 
             if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)) { // Break block
                 // TODO(caleb): World space block coordnates to chunk relative block coordnates
@@ -903,7 +705,7 @@ pub fn main() !void {
                     unloadMesh(mesh);
                 }
                 mesh_fb_ally.reset();
-                for (loaded_chunks, 0..) |chunk, chunk_index| {
+                for (world.loaded_chunks, 0..) |chunk, chunk_index| {
                     chunk_meshes[chunk_index] = cullMesh(mesh_fb_ally.allocator(), &chunk.block_data, &sprite_sheet) catch std.mem.zeroes(rl.Mesh);
                     rl.UploadMesh(&chunk_meshes[chunk_index], false);
                 }
@@ -924,7 +726,7 @@ pub fn main() !void {
                     unloadMesh(mesh);
                 }
                 mesh_fb_ally.reset();
-                for (loaded_chunks, 0..) |chunk, chunk_index| {
+                for (world.loaded_chunks, 0..) |chunk, chunk_index| {
                     chunk_meshes[chunk_index] = cullMesh(mesh_fb_ally.allocator(), &chunk.block_data, &sprite_sheet) catch std.mem.zeroes(rl.Mesh);
                     rl.UploadMesh(&chunk_meshes[chunk_index], false);
                 }
@@ -936,7 +738,7 @@ pub fn main() !void {
         rl.BeginMode3D(camera);
 
         const frustum = extractFrustum(&camera, aspect);
-        var chunk_box = AABB{ .min = rl.Vector3Zero(), .max = rl.Vector3Add(rl.Vector3Zero(), rl.Vector3{ .x = @intToFloat(f32, chunk_dim.x), .y = @intToFloat(f32, chunk_dim.x), .z = @intToFloat(f32, chunk_dim.x) }) };
+        var chunk_box = AABB{ .min = rl.Vector3Zero(), .max = rl.Vector3Add(rl.Vector3Zero(), rl.Vector3{ .x = @intToFloat(f32, Chunk.dim.x), .y = @intToFloat(f32, Chunk.dim.x), .z = @intToFloat(f32, Chunk.dim.x) }) };
 
         var should_draw_chunk = false;
         if (frustum.containsAABB(&chunk_box)) { // FIXME(caleb): This is still borked...
