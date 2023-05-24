@@ -14,7 +14,9 @@ const AutoHashMap = std.AutoHashMap;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const FixedBufferAllocator = std.heap.FixedBufferAllocator;
-const StackQ = scary_types.StackQ;
+
+const SmolQ = scary_types.SmolQ;
+const BST = scary_types.BST;
 const Vector3 = scary_types.Vector3;
 
 const hashString = std.hash_map.hashString;
@@ -55,83 +57,31 @@ const WorldSaveChunk = packed struct {
     coords: Vector3(i32),
 };
 
-const CSTNode = struct {
-    id: u32,
-    coords: Vector3(i32),
-    right: ?*CSTNode,
-    left: ?*CSTNode,
-};
+fn cstFoundTarget(a: WorldSaveChunk, b: WorldSaveChunk) bool {
+    return a.coords.equals(b.coords);
+}
 
-const CST = struct {
-    root: ?*CSTNode,
-    ally: Allocator,
-
-    pub fn init(ally: Allocator) CST {
-        return CST{
-            .root = null,
-            .ally = ally,
-        };
-    }
-
-    pub fn search(this: *CST, coords: Vector3(i32)) ?*CSTNode {
-        var target_node: ?*CSTNode = null;
-        var current_node = this.root;
-        while (current_node != null) {
-            if (coords.equals(current_node.?.coords)) { // Found target node
-                target_node = current_node;
-                break;
-            }
-            if (traverseLeft(coords, current_node.?.coords)) {
-                current_node = current_node.?.left;
-            } else {
-                current_node = current_node.?.right;
-            }
-        }
-        return target_node;
-    }
-
-    fn insert(this: *CST, id: u32, coords: Vector3(i32)) !void {
-        var current_node = this.root;
-        while (current_node != null) {
-            if (traverseLeft(coords, current_node.?.coords)) {
-                current_node = current_node.?.left;
-            } else {
-                current_node = current_node.?.right;
-            }
-        }
-        current_node = try this.ally.create(CSTNode);
-        current_node.?.id = id;
-        current_node.?.coords = coords;
-        current_node.?.left = null;
-        current_node.?.right = null;
-
-        if (this.root == null) {
-            this.root = current_node;
-        }
-    }
-
-    fn traverseLeft(a: Vector3(i32), b: Vector3(i32)) bool {
-        var check_left: bool = undefined;
-        if (a.x < b.x) { // Check x coords
+fn cstGoLeft(a: WorldSaveChunk, b: WorldSaveChunk) bool {
+    var check_left: bool = undefined;
+    if (a.coords.x < b.coords.x) { // Check x coords
+        check_left = true;
+    } else if (a.coords.x > b.coords.x) {
+        check_left = false;
+    } else { // X coord is equal check y
+        if (a.coords.y < b.coords.y) {
             check_left = true;
-        } else if (a.x > b.x) {
+        } else if (a.coords.y > b.coords.y) {
             check_left = false;
-        } else { // X coord is equal check y
-            if (a.y < b.y) {
+        } else { // Y coord is equal check z
+            if (a.coords.z < b.coords.z) {
                 check_left = true;
-            } else if (a.y > b.y) {
+            } else if (a.coords.z > b.coords.z) {
                 check_left = false;
-            } else { // Y coord is equal check z
-                if (a.z < b.z) {
-                    check_left = true;
-                } else if (a.z > b.z) {
-                    check_left = false;
-                } else unreachable;
-            }
+            } else unreachable;
         }
-        return check_left;
     }
-};
+    return check_left;
+}
 
 const SpriteSheet = struct {
     columns: u16,
@@ -211,7 +161,7 @@ const d_chunk_coordses = [_]Vector3(i32){
 };
 
 fn queueChunks(
-    load_queue: *StackQ(Vector3(i32), loaded_chunk_capacity),
+    load_queue: *SmolQ(Vector3(i32), loaded_chunk_capacity),
     current_chunk_coords: Vector3(i32),
     loaded_chunks: []*Chunk,
     loaded_chunk_count: u8,
@@ -231,7 +181,7 @@ fn queueChunks(
 
 /// Load 'loaded_chunk_capacity' chunks into active_chunks around the player.
 fn loadChunks(
-    chunk_search_tree: *CST,
+    chunk_search_tree: *BST(WorldSaveChunk, cstGoLeft, cstFoundTarget),
     chunk_map: *AutoHashMap(u64, Chunk),
     loaded_chunks: []*Chunk,
     player_pos: Vector3(i32),
@@ -242,7 +192,7 @@ fn loadChunks(
     var chunk_hash_buf: [128]u8 = undefined;
     var chunk_coords_str: []u8 = undefined;
 
-    var load_queue = StackQ(Vector3(i32), loaded_chunk_capacity){
+    var load_queue = SmolQ(Vector3(i32), loaded_chunk_capacity){
         .items = undefined,
         .len = 0,
     };
@@ -255,7 +205,7 @@ fn loadChunks(
         current_chunk_ptr = chunk_map.getPtr(hashString(chunk_coords_str)) orelse blk: { // Chunk not in map.
             var world_chunk: Chunk = undefined;
 
-            const world_chunk_node = chunk_search_tree.search(chunk_coords);
+            const world_chunk_node = chunk_search_tree.search(.{ .id = 0, .coords = chunk_coords });
             if (world_chunk_node == null) { // Chunk isn't on disk. Initialize a new chunk.
                 world_chunk.coords = chunk_coords;
                 // NOTE(caleb): Chunk id is assigned either on world save or on chunk map eviction
@@ -853,7 +803,7 @@ pub fn main() !void {
         try world_save_writer.writeAll(&test_chunk.block_data);
     }
 
-    var chunk_search_tree = CST.init(arena_ally.allocator());
+    var chunk_search_tree = BST(WorldSaveChunk, cstGoLeft, cstFoundTarget).init(arena_ally.allocator());
     {
         const world_save_file = try std.fs.cwd().openFile("data/world.sav", .{});
         defer world_save_file.close();
@@ -861,7 +811,7 @@ pub fn main() !void {
         const world_save_header = try save_file_reader.readStruct(WorldSaveHeader);
         for (0..world_save_header.chunk_count) |_| {
             const world_save_chunk = try save_file_reader.readStruct(WorldSaveChunk);
-            try chunk_search_tree.insert(world_save_chunk.id, world_save_chunk.coords);
+            try chunk_search_tree.insert(world_save_chunk);
         }
     }
 

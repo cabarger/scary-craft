@@ -26,7 +26,7 @@ pub fn Vector3(comptime T: type) type {
     };
 }
 
-pub fn StackQ(comptime T: type, comptime capacity: u8) type {
+pub fn SmolQ(comptime T: type, comptime capacity: u8) type {
     return struct {
         const Self = @This();
 
@@ -48,6 +48,66 @@ pub fn StackQ(comptime T: type, comptime capacity: u8) type {
             std.debug.assert(self.len != 0);
             self.len -= 1;
             return self.items[self.len];
+        }
+    };
+}
+
+// NOTE(caleb): This might be better off *not* a generic. I'm not completly happy with this implementation.
+//    If I end up needing another binary search tree than we will see how it holds up.
+pub fn BST(
+    comptime T: type,
+    comptime goLeftFn: fn (lhs: T, rhs: T) bool,
+    comptime foundTargetFn: fn (lhs: T, rhs: T) bool,
+) type {
+    return struct {
+        const Self = @This();
+
+        const BSTNode = struct {
+            left: ?*BSTNode,
+            right: ?*BSTNode,
+            value: T,
+        };
+
+        root: ?*BSTNode,
+        ally: std.mem.Allocator,
+
+        pub fn init(ally: std.mem.Allocator) Self {
+            return Self{
+                .root = null,
+                .ally = ally,
+            };
+        }
+
+        pub fn search(this: *Self, value: T) ?T {
+            var current_node = this.root;
+            while (current_node != null) {
+                if (foundTargetFn(value, current_node.?.value)) {
+                    return current_node.?.value;
+                }
+                if (goLeftFn(value, current_node.?.value)) {
+                    current_node = current_node.?.left;
+                } else {
+                    current_node = current_node.?.right;
+                }
+            }
+            return null;
+        }
+
+        pub fn insert(this: *Self, value: T) !void {
+            var current_node = this.root;
+            while (current_node != null) {
+                if (goLeftFn(value, current_node.?.value)) {
+                    current_node = current_node.?.left;
+                } else {
+                    current_node = current_node.?.right;
+                }
+            }
+            current_node = try this.ally.create(BSTNode);
+            current_node.?.value = value;
+
+            if (this.root == null) { // Edge case where this is the first insertion.
+                this.root = current_node;
+            }
         }
     };
 }
