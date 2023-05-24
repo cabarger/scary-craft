@@ -9,16 +9,15 @@ const rl = @cImport({
     @cInclude("rlgl.h");
 });
 
-const Vector3I = scary_types.Vector3I;
-
 const ArrayList = std.ArrayList;
 const AutoHashMap = std.AutoHashMap;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const FixedBufferAllocator = std.heap.FixedBufferAllocator;
+const StackQ = scary_types.StackQ;
+const Vector3 = scary_types.Vector3;
 
 const hashString = std.hash_map.hashString;
-const vector3IZero = scary_types.vector3IZero;
 
 // TODO(caleb):
 // -----------------------------------------------------------------------------------
@@ -30,7 +29,7 @@ const vector3IZero = scary_types.vector3IZero;
 // INSERT SCARY ENEMY IDEAS HERE...
 
 const block_dim = rl.Vector3{ .x = 1, .y = 1, .z = 1 };
-const chunk_dim = Vector3I{ .x = 16, .y = 16, .z = 16 };
+const chunk_dim = Vector3(i32){ .x = 16, .y = 16, .z = 16 };
 const meters_per_block = 1;
 
 const crosshair_thickness_in_pixels = 2;
@@ -53,70 +52,86 @@ const WorldSaveHeader = packed struct {
 
 const WorldSaveChunk = packed struct {
     id: u32, // NOTE(caleb): This will act as an index into the world save.
-    coords: Vector3I,
+    coords: Vector3(i32),
 };
 
-const ChunknaryTreeNode = struct {
+const CSTNode = struct {
     id: u32,
-    coords: Vector3I,
-    right: ?*ChunknaryTreeNode,
-    left: ?*ChunknaryTreeNode,
+    coords: Vector3(i32),
+    right: ?*CSTNode,
+    left: ?*CSTNode,
 };
 
-fn chunknaryTreeTraverseLeft(a: Vector3I, b: Vector3I) bool {
-    var check_left: bool = undefined;
-    if (a.x < b.x) { // Check x coords
-        check_left = true;
-    } else if (a.x > b.x) {
-        check_left = false;
-    } else { // X coord is equal check y
-        if (a.y < b.y) {
+const CST = struct {
+    root: ?*CSTNode,
+    ally: Allocator,
+
+    pub fn init(ally: Allocator) CST {
+        return CST{
+            .root = null,
+            .ally = ally,
+        };
+    }
+
+    pub fn search(this: *CST, coords: Vector3(i32)) ?*CSTNode {
+        var target_node: ?*CSTNode = null;
+        var current_node = this.root;
+        while (current_node != null) {
+            if (coords.equals(current_node.?.coords)) { // Found target node
+                target_node = current_node;
+                break;
+            }
+            if (traverseLeft(coords, current_node.?.coords)) {
+                current_node = current_node.?.left;
+            } else {
+                current_node = current_node.?.right;
+            }
+        }
+        return target_node;
+    }
+
+    fn insert(this: *CST, id: u32, coords: Vector3(i32)) !void {
+        var current_node = this.root;
+        while (current_node != null) {
+            if (traverseLeft(coords, current_node.?.coords)) {
+                current_node = current_node.?.left;
+            } else {
+                current_node = current_node.?.right;
+            }
+        }
+        current_node = try this.ally.create(CSTNode);
+        current_node.?.id = id;
+        current_node.?.coords = coords;
+        current_node.?.left = null;
+        current_node.?.right = null;
+
+        if (this.root == null) {
+            this.root = current_node;
+        }
+    }
+
+    fn traverseLeft(a: Vector3(i32), b: Vector3(i32)) bool {
+        var check_left: bool = undefined;
+        if (a.x < b.x) { // Check x coords
             check_left = true;
-        } else if (a.y > b.y) {
+        } else if (a.x > b.x) {
             check_left = false;
-        } else { // Y coord is equal check z
-            if (a.z < b.z) {
+        } else { // X coord is equal check y
+            if (a.y < b.y) {
                 check_left = true;
-            } else if (a.z > b.z) {
+            } else if (a.y > b.y) {
                 check_left = false;
-            } else unreachable;
+            } else { // Y coord is equal check z
+                if (a.z < b.z) {
+                    check_left = true;
+                } else if (a.z > b.z) {
+                    check_left = false;
+                } else unreachable;
+            }
         }
+        return check_left;
     }
-    return check_left;
-}
-
-fn chunknaryTreeSearch(root: ?*ChunknaryTreeNode, coords: Vector3I) ?*ChunknaryTreeNode {
-    var target_node: ?*ChunknaryTreeNode = null;
-    var current_node = root;
-    while (current_node != null) {
-        if (coords.equals(current_node.?.coords)) { // Found target node
-            target_node = current_node;
-            break;
-        }
-        if (chunknaryTreeTraverseLeft(coords, current_node.?.coords)) {
-            current_node = current_node.?.left;
-        } else {
-            current_node = current_node.?.right;
-        }
-    }
-    return target_node;
-}
-
-fn chunknaryTreeInsert(ally: Allocator, root: ?*ChunknaryTreeNode, id: u32, coords: Vector3I) !void {
-    var current_node = root;
-    while (current_node != null) {
-        if (chunknaryTreeTraverseLeft(coords, current_node.?.coords)) {
-            current_node = current_node.?.left;
-        } else {
-            current_node = current_node.?.right;
-        }
-    }
-    current_node = @ptrCast(?*ChunknaryTreeNode, try ally.create(ChunknaryTreeNode));
-    current_node.?.id = id;
-    current_node.?.coords = coords;
-    current_node.?.left = null;
-    current_node.?.right = null;
-}
+};
 
 const SpriteSheet = struct {
     columns: u16,
@@ -182,58 +197,90 @@ const PlaneIndex = enum(u8) {
 };
 
 const BlockHit = struct {
-    coords: rl.Vector3, // TODO(caleb): Vector3I
+    coords: rl.Vector3, // TODO(caleb): Vector3(i32)
     face: PlaneIndex,
 };
 
+const d_chunk_coordses = [_]Vector3(i32){
+    Vector3(i32){ .x = 0, .y = 1, .z = 0 },
+    Vector3(i32){ .x = 0, .y = -1, .z = 0 },
+    Vector3(i32){ .x = -1, .y = 0, .z = 0 },
+    Vector3(i32){ .x = 1, .y = 0, .z = 0 },
+    Vector3(i32){ .x = 0, .y = 0, .z = -1 },
+    Vector3(i32){ .x = 0, .y = 0, .z = 1 },
+};
+
+fn queueChunks(
+    load_queue: *StackQ(Vector3(i32), loaded_chunk_capacity),
+    current_chunk_coords: Vector3(i32),
+    loaded_chunks: []*Chunk,
+    loaded_chunk_count: u8,
+) void {
+    outer: for (d_chunk_coordses) |d_chunk_coords| {
+        if (load_queue.len + 1 > loaded_chunk_capacity - loaded_chunk_count) return;
+        const next_chunk_coords = current_chunk_coords.add(d_chunk_coords);
+
+        // Next chunk coords don't exist in either load queue or loaded chunks
+        for (load_queue.items[0..load_queue.len]) |chunk_coords|
+            if (next_chunk_coords.equals(chunk_coords)) continue :outer;
+        for (loaded_chunks[0..loaded_chunk_count]) |chunk|
+            if (next_chunk_coords.equals(chunk.coords)) continue :outer;
+        load_queue.pushAssumeCapacity(next_chunk_coords);
+    }
+}
+
 /// Load 'loaded_chunk_capacity' chunks into active_chunks around the player.
 fn loadChunks(
-    chunknary_tree_root: *ChunknaryTreeNode,
+    chunk_search_tree: *CST,
     chunk_map: *AutoHashMap(u64, Chunk),
     loaded_chunks: []*Chunk,
-    player_pos: Vector3I,
+    player_pos: Vector3(i32),
 ) !void {
     var loaded_chunk_count: u8 = 0;
-    for (loaded_chunks) |chunk| {
-        chunk.id = 0;
-        chunk.coords = vector3IZero();
-        for (&chunk.block_data) |*byte| {
-            byte.* = 0;
-        }
-    }
-
-    // Get the chunk corosponding to player_pos
-    const player_chunk_coords = worldToChunkCoords(player_pos);
-
-    // Assign start chunk from player chunk
+    var current_chunk_ptr: *Chunk = undefined;
+    var chunk_coords: Vector3(i32) = undefined;
     var chunk_hash_buf: [128]u8 = undefined;
-    const player_chunk_coords_str = try std.fmt.bufPrint(&chunk_hash_buf, "{d}{d}{d}", .{ player_chunk_coords.x, player_chunk_coords.y, player_chunk_coords.z });
-    var current_chunk_ptr = chunk_map.getPtr(hashString(player_chunk_coords_str)) orelse blk: { // Chunk not in map.
-        var world_chunk: Chunk = undefined;
+    var chunk_coords_str: []u8 = undefined;
 
-        const world_chunk_node = chunknaryTreeSearch(chunknary_tree_root, player_chunk_coords);
-        if (world_chunk_node == null) { // Chunk isn't on disk. Initialize a new chunk.
-            world_chunk.coords = player_chunk_coords;
-            // NOTE(caleb): Chunk id is assigned either on world save or on chunk map eviction
-            //     a value of 0 indicates that it needs a new entry in the save file.
-            world_chunk.id = 0;
-            for (&world_chunk.block_data) |*block| block.* = 0;
-        } else { // Use save chunk's id to retrive from disk
-            const world_save_file = try std.fs.cwd().createFile("data/world.sav", .{ .truncate = true });
-            defer world_save_file.close();
-            const world_save_reader = world_save_file.reader();
-            try world_save_reader.skipBytes(@sizeOf(WorldSaveHeader), .{});
-            try world_save_reader.skipBytes((@sizeOf(WorldSaveChunk) + @intCast(u32, chunk_dim.x) * @intCast(u32, chunk_dim.y) * @intCast(i32, chunk_dim.z)) * (world_chunk_node.?.id - 1), .{});
-            const world_save_chunk = try world_save_reader.readStruct(WorldSaveChunk);
-            world_chunk.id = world_save_chunk.id;
-            world_chunk.coords = world_save_chunk.coords;
-            world_chunk.block_data = try world_save_reader.readBytesNoEof(chunk_dim.x * chunk_dim.y * chunk_dim.z);
-        }
-
-        chunk_map.putAssumeCapacityNoClobber(hashString(player_chunk_coords_str), world_chunk);
-        break :blk chunk_map.getPtr(hashString(player_chunk_coords_str)) orelse unreachable;
+    var load_queue = StackQ(Vector3(i32), loaded_chunk_capacity){
+        .items = undefined,
+        .len = 0,
     };
-    loaded_chunks[loaded_chunk_count] = current_chunk_ptr;
+
+    chunk_coords = worldToChunkCoords(player_pos); // Start chunk coords
+    while (loaded_chunk_count < loaded_chunk_capacity) {
+        queueChunks(&load_queue, chunk_coords, loaded_chunks, loaded_chunk_count);
+        chunk_coords = load_queue.popAssumeNotEmpty();
+        chunk_coords_str = try std.fmt.bufPrint(&chunk_hash_buf, "{d}{d}{d}", .{ chunk_coords.x, chunk_coords.y, chunk_coords.z });
+        current_chunk_ptr = chunk_map.getPtr(hashString(chunk_coords_str)) orelse blk: { // Chunk not in map.
+            var world_chunk: Chunk = undefined;
+
+            const world_chunk_node = chunk_search_tree.search(chunk_coords);
+            if (world_chunk_node == null) { // Chunk isn't on disk. Initialize a new chunk.
+                world_chunk.coords = chunk_coords;
+                // NOTE(caleb): Chunk id is assigned either on world save or on chunk map eviction
+                //     a value of 0 indicates that it needs a new entry in the save file.
+                world_chunk.id = 0;
+                for (&world_chunk.block_data) |*block| block.* = 0;
+            } else { // Use save chunk's id to retrive from disk
+                const world_save_file = try std.fs.cwd().openFile("data/world.sav", .{});
+                defer world_save_file.close();
+                const world_save_reader = world_save_file.reader();
+                try world_save_reader.skipBytes(@sizeOf(WorldSaveHeader), .{});
+                try world_save_reader.skipBytes((@sizeOf(WorldSaveChunk) + @intCast(u32, chunk_dim.x) * @intCast(u32, chunk_dim.y) * @intCast(i32, chunk_dim.z)) * (world_chunk_node.?.id - 1), .{});
+                const world_save_chunk = try world_save_reader.readStruct(WorldSaveChunk);
+                world_chunk.id = world_save_chunk.id;
+                world_chunk.coords = world_save_chunk.coords;
+                world_chunk.block_data = try world_save_reader.readBytesNoEof(chunk_dim.x * chunk_dim.y * chunk_dim.z);
+            }
+
+            // TODO(caleb): Handle purging chunks from chunk map
+            chunk_map.putAssumeCapacityNoClobber(hashString(chunk_coords_str), world_chunk);
+            break :blk chunk_map.getPtr(hashString(chunk_coords_str)) orelse unreachable;
+        };
+        loaded_chunks[loaded_chunk_count] = current_chunk_ptr;
+        loaded_chunk_count += 1;
+    }
 }
 
 /// Gribb-Hartmann viewing frustum extraction.
@@ -345,13 +392,33 @@ const Direction = enum {
 
 const Chunk = struct {
     id: u32,
-    coords: Vector3I,
+    coords: Vector3(i32),
     block_data: [chunk_dim.x * chunk_dim.y * chunk_dim.z]u8,
+
+    /// Sets block id at chunk relative coords (x, y, z)
+    pub inline fn put(this: *Chunk, val: u8, x: u8, y: u8, z: u8) void {
+        this.block_data[@intCast(u16, chunk_dim.x * chunk_dim.y) * z + y * @intCast(u16, chunk_dim.x) + x] = val;
+    }
+
+    /// Return block id at chunk relative coords (x, y, z)
+    pub inline fn fetch(this: *const Chunk, x: u8, y: u8, z: u8) u8 {
+        var result: u8 = undefined;
+        result = this.block_data[@intCast(u16, chunk_dim.x * chunk_dim.y) * z + y * @intCast(u16, chunk_dim.x) + x];
+        return result;
+    }
+
+    /// Return's a world save chunk from this chunk's id and coords.
+    pub inline fn toWorldSaveChunk(this: *Chunk) WorldSaveChunk {
+        return WorldSaveChunk{
+            .id = this.id,
+            .coords = this.coords,
+        };
+    }
 };
 
 /// Given a pos in world space, return the eqv. chunk space coords.
-inline fn worldToChunkCoords(pos: Vector3I) Vector3I {
-    var result: Vector3I = undefined;
+inline fn worldToChunkCoords(pos: Vector3(i32)) Vector3(i32) {
+    var result: Vector3(i32) = undefined;
     result.x = @divFloor(pos.x, chunk_dim.x);
     result.y = @divFloor(pos.y, chunk_dim.y);
     result.z = @divFloor(pos.z, chunk_dim.z);
@@ -385,26 +452,16 @@ fn updateLightValues(shader: rl.Shader, light: *Light) void {
     rl.SetShaderValue(shader, light.color_loc, &light.color, rl.SHADER_UNIFORM_VEC4);
 }
 
-inline fn denseMapPut(dense_map: []u8, val: i16, x: i16, y: i16, z: i16) void {
-    dense_map[@intCast(u16, chunk_dim.x * chunk_dim.y) * @intCast(u16, z) + @intCast(u16, y) * @intCast(u16, chunk_dim.x) + @intCast(u16, x)] = val;
-}
-
-inline fn denseMapLookup(dense_map: []u8, x: i16, y: i16, z: i16) ?i16 {
-    if (x >= chunk_dim.x or y >= chunk_dim.y or z >= chunk_dim.z or x < 0 or y < 0 or z < 0)
-        return null; // Block index out of bounds.
-    return dense_map[@intCast(u16, chunk_dim.x * chunk_dim.y) * @intCast(u16, z) + @intCast(u16, y) * @intCast(u16, chunk_dim.x) + @intCast(u16, x)];
-}
-
 /// Given a ray collision point, figure out the the world space block coords of the block being
 /// selected and the face it is being selected from.
 /// FIXME(caleb): This function breaks down at collisions with distance exceeding ~30 blocks.
-fn blockHitFromPoint(dense_map: []u8, p: rl.Vector3) BlockHit {
+fn blockHitFromPoint(chunk: *Chunk, p: rl.Vector3) BlockHit {
     var result: BlockHit = undefined;
-    const block_x = @floatToInt(i16, p.x + rl.EPSILON);
-    const block_y = @floatToInt(i16, p.y + rl.EPSILON);
-    const block_z = @floatToInt(i16, p.z + rl.EPSILON);
-    const val = denseMapLookup(dense_map, block_x, block_y, block_z);
-    if (val != null and val.? == 1) { // Left, bottom, or back face
+    const block_x = @floatToInt(u8, p.x + rl.EPSILON);
+    const block_y = @floatToInt(u8, p.y + rl.EPSILON);
+    const block_z = @floatToInt(u8, p.z + rl.EPSILON);
+    const val = chunk.fetch(block_x, block_y, block_z);
+    if (val == 1) { // Left, bottom, or back face
         var plane: Plane = undefined;
         var point_on_face: rl.Vector3 = undefined;
         var face_normal: rl.Vector3 = undefined;
@@ -481,11 +538,10 @@ inline fn setVertex3f(verticies: []f32, verticies_offset: *u32, x: f32, y: f32, 
     verticies_offset.* += 3;
 }
 
-inline fn solidBlock(dense_map: []u8, x: i16, y: i16, z: i16) bool {
+inline fn isSolidBlock(dense_map: []u8, x: i16, y: i16, z: i16) bool {
     var result = false;
-    if (denseMapLookup(dense_map, x, y, z)) |block| {
-        if (block == 1)
-            result = true;
+    if (dense_map[@intCast(u16, chunk_dim.x * chunk_dim.y) * @intCast(u8, z) + @intCast(u8, y) * @intCast(u16, chunk_dim.x) + @intCast(u8, x)] != 0) {
+        result = true;
     }
     return result;
 }
@@ -501,15 +557,15 @@ fn cullMesh(ally: Allocator, dense_map: []u8, sprite_sheet: *SpriteSheet) !rl.Me
             while (block_z < chunk_dim.z) : (block_z += 1) {
                 var block_x: f32 = 0;
                 while (block_x < chunk_dim.x) : (block_x += 1) {
-                    const curr_block = denseMapLookup(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y), @floatToInt(i16, block_z)) orelse unreachable;
+                    const curr_block = dense_map[@intCast(u16, chunk_dim.x * chunk_dim.y) * @floatToInt(u8, block_z) + @floatToInt(u8, block_y) * @intCast(u16, chunk_dim.x) + @floatToInt(u8, block_x)];
                     if (curr_block == 0)
                         continue;
-                    face_count += if (!solidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y + 1), @floatToInt(i16, block_z))) 1 else 0; // Top face
-                    face_count += if (!solidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y - 1), @floatToInt(i16, block_z))) 1 else 0; // Bottom face
-                    face_count += if (!solidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y), @floatToInt(i16, block_z + 1))) 1 else 0; // Front face
-                    face_count += if (!solidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y), @floatToInt(i16, block_z - 1))) 1 else 0; // Back face
-                    face_count += if (!solidBlock(dense_map, @floatToInt(i16, block_x + 1), @floatToInt(i16, block_y), @floatToInt(i16, block_z))) 1 else 0; // Right face
-                    face_count += if (!solidBlock(dense_map, @floatToInt(i16, block_x - 1), @floatToInt(i16, block_y), @floatToInt(i16, block_z))) 1 else 0; // Left face
+                    face_count += if (!isSolidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y + 1), @floatToInt(i16, block_z))) 1 else 0; // Top face
+                    face_count += if (!isSolidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y - 1), @floatToInt(i16, block_z))) 1 else 0; // Bottom face
+                    face_count += if (!isSolidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y), @floatToInt(i16, block_z + 1))) 1 else 0; // Front face
+                    face_count += if (!isSolidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y), @floatToInt(i16, block_z - 1))) 1 else 0; // Back face
+                    face_count += if (!isSolidBlock(dense_map, @floatToInt(i16, block_x + 1), @floatToInt(i16, block_y), @floatToInt(i16, block_z))) 1 else 0; // Right face
+                    face_count += if (!isSolidBlock(dense_map, @floatToInt(i16, block_x - 1), @floatToInt(i16, block_y), @floatToInt(i16, block_z))) 1 else 0; // Left face
                 }
             }
         }
@@ -548,12 +604,12 @@ fn cullMesh(ally: Allocator, dense_map: []u8, sprite_sheet: *SpriteSheet) !rl.Me
             while (block_z < chunk_dim.z) : (block_z += 1) {
                 var block_x: f32 = 0;
                 while (block_x < chunk_dim.x) : (block_x += 1) {
-                    const curr_block = denseMapLookup(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y), @floatToInt(i16, block_z)) orelse unreachable;
+                    const curr_block = dense_map[@intCast(u16, chunk_dim.x * chunk_dim.y) * @floatToInt(u8, block_z) + @floatToInt(u8, block_y) * @intCast(u16, chunk_dim.x) + @floatToInt(u8, block_x)];
                     if (curr_block == 0) // No block here so don't worry about writing mesh data
                         continue;
 
                     // Top Face
-                    if (!solidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y + 1), @floatToInt(i16, block_z))) {
+                    if (!isSolidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y + 1), @floatToInt(i16, block_z))) {
                         setFaceNormals(normals, &normals_offset, 0, 1, 0); // Normals pointing up
                         setTexcoord2f(texcoords, &texcoords_offset, grass_texcoord_start_x, grass_texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_x, block_y + block_dim.y, block_z + block_dim.z); // Bottom left texture and vertex
@@ -570,7 +626,7 @@ fn cullMesh(ally: Allocator, dense_map: []u8, sprite_sheet: *SpriteSheet) !rl.Me
                     }
 
                     // Front face
-                    if (!solidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y), @floatToInt(i16, block_z + 1))) {
+                    if (!isSolidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y), @floatToInt(i16, block_z + 1))) {
                         setFaceNormals(normals, &normals_offset, 0, 0, 1); // Normals pointing towards viewer
                         setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z + block_dim.z); // Bottom left texture and vertex
@@ -587,7 +643,7 @@ fn cullMesh(ally: Allocator, dense_map: []u8, sprite_sheet: *SpriteSheet) !rl.Me
                     }
 
                     // Back face
-                    if (!solidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y), @floatToInt(i16, block_z - 1))) {
+                    if (!isSolidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y), @floatToInt(i16, block_z - 1))) {
                         setFaceNormals(normals, &normals_offset, 0, 0, -1); // Normals pointing away from viewer
                         setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y, block_z); // Bottom left texture and vertex
@@ -604,7 +660,7 @@ fn cullMesh(ally: Allocator, dense_map: []u8, sprite_sheet: *SpriteSheet) !rl.Me
                     }
 
                     // Bottom face
-                    if (!solidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y - 1), @floatToInt(i16, block_z))) {
+                    if (!isSolidBlock(dense_map, @floatToInt(i16, block_x), @floatToInt(i16, block_y - 1), @floatToInt(i16, block_z))) {
                         setFaceNormals(normals, &normals_offset, 0.0, -1.0, 0.0); // Normals pointing down
                         setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z); // Bottom left texture and vertex
@@ -621,7 +677,7 @@ fn cullMesh(ally: Allocator, dense_map: []u8, sprite_sheet: *SpriteSheet) !rl.Me
                     }
 
                     // Right face
-                    if (!solidBlock(dense_map, @floatToInt(i16, block_x + 1), @floatToInt(i16, block_y), @floatToInt(i16, block_z))) {
+                    if (!isSolidBlock(dense_map, @floatToInt(i16, block_x + 1), @floatToInt(i16, block_y), @floatToInt(i16, block_z))) {
                         setFaceNormals(normals, &normals_offset, 1.0, 0.0, 0.0); // Normals pointing right
                         setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_x + block_dim.x, block_y, block_z + block_dim.z); // Bottom left of the texture and vertex
@@ -638,7 +694,7 @@ fn cullMesh(ally: Allocator, dense_map: []u8, sprite_sheet: *SpriteSheet) !rl.Me
                     }
 
                     // Left Face
-                    if (!solidBlock(dense_map, @floatToInt(i16, block_x - 1), @floatToInt(i16, block_y), @floatToInt(i16, block_z))) {
+                    if (!isSolidBlock(dense_map, @floatToInt(i16, block_x - 1), @floatToInt(i16, block_y), @floatToInt(i16, block_z))) {
                         setFaceNormals(normals, &normals_offset, -1.0, 0.0, 0.0); // Normals Pointing Left
                         setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_x, block_y, block_z); // Bottom left of the texture and texture
@@ -774,31 +830,30 @@ pub fn main() !void {
     {
         const world_save_file = try std.fs.cwd().createFile("data/world.sav", .{ .truncate = true });
         defer world_save_file.close();
-        const world_save_writer = world_save_file.writer();
 
         const world_save_header = WorldSaveHeader{ .chunk_count = 1 };
 
         // Create a chunk slice 16x16 at y = 0;
-        var test_chunk: WorldSaveChunk = undefined;
-        test_chunk.coords = Vector3I{ .x = 0, .y = 0, .z = 0 };
+        var test_chunk: Chunk = undefined;
+        test_chunk.coords = Vector3(i32){ .x = 0, .y = 0, .z = 0 };
         test_chunk.id = 1;
-        var block_data: [chunk_dim.x * chunk_dim.y * chunk_dim.z]u8 = undefined;
-        for (&block_data) |*byte| byte.* = 0;
+        for (&test_chunk.block_data) |*byte| byte.* = 0;
 
-        var block_z: u16 = 0;
+        var block_z: u8 = 0;
         while (block_z < chunk_dim.z) : (block_z += 1) {
-            var block_x: u16 = 0;
+            var block_x: u8 = 0;
             while (block_x < chunk_dim.x) : (block_x += 1) {
-                block_data[@intCast(u16, chunk_dim.x * chunk_dim.y) * block_z + block_x] = 1;
+                test_chunk.put(1, block_x, 0, block_z);
             }
         }
 
+        const world_save_writer = world_save_file.writer();
         try world_save_writer.writeStruct(world_save_header);
-        try world_save_writer.writeStruct(test_chunk);
-        try world_save_writer.writeAll(&block_data);
+        try world_save_writer.writeStruct(test_chunk.toWorldSaveChunk());
+        try world_save_writer.writeAll(&test_chunk.block_data);
     }
 
-    var chunknary_tree_root: ?*ChunknaryTreeNode = null;
+    var chunk_search_tree = CST.init(arena_ally.allocator());
     {
         const world_save_file = try std.fs.cwd().openFile("data/world.sav", .{});
         defer world_save_file.close();
@@ -806,7 +861,7 @@ pub fn main() !void {
         const world_save_header = try save_file_reader.readStruct(WorldSaveHeader);
         for (0..world_save_header.chunk_count) |_| {
             const world_save_chunk = try save_file_reader.readStruct(WorldSaveChunk);
-            try chunknaryTreeInsert(arena_ally.allocator(), chunknary_tree_root, world_save_chunk.id, world_save_chunk.coords);
+            try chunk_search_tree.insert(world_save_chunk.id, world_save_chunk.coords);
         }
     }
 
@@ -814,7 +869,7 @@ pub fn main() !void {
     try chunk_map.ensureTotalCapacity(loaded_chunk_capacity);
 
     var loaded_chunks: [loaded_chunk_capacity]*Chunk = undefined;
-    try loadChunks(@ptrCast(*ChunknaryTreeNode, chunknary_tree_root.?), &chunk_map, &loaded_chunks, Vector3I{
+    try loadChunks(&chunk_search_tree, &chunk_map, &loaded_chunks, Vector3(i32){
         .x = @floatToInt(i32, camera.position.x),
         .y = @floatToInt(i32, camera.position.y),
         .z = @floatToInt(i32, camera.position.z),
@@ -885,10 +940,11 @@ pub fn main() !void {
 
         var target_block: BlockHit = undefined;
         if (crosshair_ray_collision.hit and crosshair_ray_collision.distance < crosshair_block_range) {
-            target_block = blockHitFromPoint(&loaded_chunks[collision_chunk_index].block_data, crosshair_ray_collision.point);
+            target_block = blockHitFromPoint(loaded_chunks[collision_chunk_index], crosshair_ray_collision.point);
 
             if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)) { // Break block
-                denseMapPut(&loaded_chunks[collision_chunk_index].block_data, 0, @floatToInt(i16, target_block.coords.x), @floatToInt(i16, target_block.coords.y), @floatToInt(i16, target_block.coords.z));
+                // TODO(caleb): World space block coordnates to chunk relative block coordnates
+                //denseMapPut(&loaded_chunks[collision_chunk_index].block_data, 0, @floatToInt(i16, target_block.coords.x), @floatToInt(i16, target_block.coords.y), @floatToInt(i16, target_block.coords.z));
 
                 // TODO(caleb): Only update mesh that changed.
 
@@ -911,7 +967,7 @@ pub fn main() !void {
                     .near => d_target_block_coords = rl.Vector3{ .x = 0, .y = 0, .z = 1 },
                     .far => d_target_block_coords = rl.Vector3{ .x = 0, .y = 0, .z = -1 },
                 }
-                denseMapPut(&loaded_chunks[collision_chunk_index].block_data, 1, @floatToInt(i16, target_block.coords.x + d_target_block_coords.x), @floatToInt(i16, target_block.coords.y + d_target_block_coords.y), @floatToInt(i16, target_block.coords.z + d_target_block_coords.z));
+                //               denseMapPut(&loaded_chunks[collision_chunk_index].block_data, 1, @floatToInt(i16, target_block.coords.x + d_target_block_coords.x), @floatToInt(i16, target_block.coords.y + d_target_block_coords.y), @floatToInt(i16, target_block.coords.z + d_target_block_coords.z));
 
                 // Update chunk mesh
                 for (chunk_meshes) |mesh| {
