@@ -21,7 +21,9 @@ pub fn Vector3(comptime T: type) type {
         }
 
         pub inline fn equals(v1: Self, v2: Self) bool {
-            return (v1.x == v2.x and v1.y == v2.y and v1.z == v2.z);
+            return ((v1.x == v2.x) and
+                (v1.y == v2.y) and
+                (v1.z == v2.z));
         }
     };
 }
@@ -104,6 +106,8 @@ pub fn BST(
             }
             current_node = try this.ally.create(BSTNode);
             current_node.?.value = value;
+            current_node.?.right = null;
+            current_node.?.left = null;
 
             if (this.root == null) { // Edge case where this is the first insertion.
                 this.root = current_node;

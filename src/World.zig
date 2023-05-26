@@ -11,7 +11,7 @@ const hashString = std.hash_map.hashString;
 
 const Self = @This();
 
-pub const loaded_chunk_capacity = 20;
+pub const loaded_chunk_capacity = 7;
 
 const WorldSaveHeader = packed struct {
     chunk_count: u32,
@@ -71,6 +71,8 @@ pub fn loadSave(world: *Self, world_save_path: []const u8) !void {
         try world.chunk_search_tree.insert(world_save_chunk);
     }
 
+    std.debug.print("{?}\n", .{world.chunk_search_tree.root.?.value});
+
     try world.chunk_map.ensureTotalCapacity(loaded_chunk_capacity);
     try loadChunks(
         &world.chunk_search_tree,
@@ -93,7 +95,7 @@ inline fn worldToChunkCoords(pos: Vector3(i32)) Vector3(i32) {
     return result;
 }
 
-const d_chunk_coordses = [_]Vector3(i32){
+pub const d_chunk_coordses = [_]Vector3(i32){
     Vector3(i32){ .x = 0, .y = 1, .z = 0 },
     Vector3(i32){ .x = 0, .y = -1, .z = 0 },
     Vector3(i32){ .x = -1, .y = 0, .z = 0 },
@@ -139,12 +141,12 @@ fn loadChunks(
         .len = 0,
     };
 
-    chunk_coords = worldToChunkCoords(player_pos); // Start chunk coords
+    load_queue.pushAssumeCapacity(worldToChunkCoords(player_pos)); // Push start chunk
     while (loaded_chunk_count < loaded_chunk_capacity) {
-        queueChunks(&load_queue, chunk_coords, loaded_chunks, loaded_chunk_count);
         chunk_coords = load_queue.popAssumeNotEmpty();
+        queueChunks(&load_queue, chunk_coords, loaded_chunks, loaded_chunk_count);
         chunk_coords_str = try std.fmt.bufPrint(&chunk_hash_buf, "{d}{d}{d}", .{ chunk_coords.x, chunk_coords.y, chunk_coords.z });
-        current_chunk_ptr = chunk_map.getPtr(hashString(chunk_coords_str)) orelse blk: { // Chunk not in map.
+        current_chunk_ptr = chunk_map.getPtr(hashString(chunk_coords_str)) orelse blk: { // Miss. Chunk probably needs to be loaded from disk :|
             var world_chunk: Chunk = undefined;
 
             const world_chunk_node = chunk_search_tree.search(.{ .id = 0, .coords = chunk_coords });
@@ -172,11 +174,14 @@ fn loadChunks(
         };
         loaded_chunks[loaded_chunk_count] = current_chunk_ptr;
         loaded_chunk_count += 1;
+        std.debug.print("Loaded chunk: ({d},{d},{d})\n", .{ current_chunk_ptr.coords.x, current_chunk_ptr.coords.y, current_chunk_ptr.coords.z });
     }
 }
 
 fn cstFoundTarget(a: WorldSaveChunk, b: WorldSaveChunk) bool {
-    return a.coords.equals(b.coords);
+    var result = false;
+    result = a.coords.equals(b.coords);
+    return result;
 }
 
 fn cstGoLeft(a: WorldSaveChunk, b: WorldSaveChunk) bool {

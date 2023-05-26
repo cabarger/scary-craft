@@ -1,3 +1,4 @@
+const std = @import("std.zig");
 const scary_types = @import("scary_types.zig");
 
 const BST = scary_types.BST;
@@ -5,7 +6,11 @@ const Vector3 = scary_types.Vector3;
 
 const Self = @This();
 
-pub const dim = Vector3(i32){ .x = 16, .y = 16, .z = 16 };
+pub const dim = Vector3(u16){ .x = 16, .y = 16, .z = 16 };
+
+pub const u_dimx = std.meta.Int(std.builtin.Signedness.unsigned, std.math.log2_int(u16, std.math.ceilPowerOfTwoAssert(u16, dim.x)));
+pub const u_dimy = std.meta.Int(std.builtin.Signedness.unsigned, std.math.log2_int(u16, std.math.ceilPowerOfTwoAssert(u16, dim.y)));
+pub const u_dimz = std.meta.Int(std.builtin.Signedness.unsigned, std.math.log2_int(u16, std.math.ceilPowerOfTwoAssert(u16, dim.z)));
 
 id: u32,
 coords: Vector3(i32),
