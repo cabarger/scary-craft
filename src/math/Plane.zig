@@ -1,8 +1,4 @@
-const rl = @cImport({
-    @cInclude("raylib.h");
-    @cInclude("raymath.h");
-});
-
+const rl = @import("../rl.zig");
 const Self = @This();
 
 normal: rl.Vector3,

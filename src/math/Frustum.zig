@@ -1,14 +1,10 @@
-const rl = @cImport({
-    @cInclude("raylib.h");
-    @cInclude("raymath.h");
-    @cInclude("rcamera.h");
-});
+const rl = @import("../rl.zig");
 const Plane = @import("Plane.zig");
 const AABB = @import("AABB.zig");
 
 const Self = @This();
 
-const PlaneIndex = enum(u8) {
+pub const PlaneIndex = enum(u8) {
     top = 0,
     bottom,
     left,

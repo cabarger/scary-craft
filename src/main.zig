@@ -1,15 +1,9 @@
 const std = @import("std");
+const rl = @import("rl.zig");
 const scary_types = @import("scary_types.zig");
-
-const rl = @cImport({
-    @cInclude("raylib.h");
-    @cInclude("raymath.h");
-    @cInclude("rcamera.h");
-    @cInclude("rlgl.h");
-});
-
 const renderer = @import("renderer.zig");
 const block_caster = @import("block_caster.zig");
+
 const Chunk = @import("Chunk.zig");
 const World = @import("World.zig");
 const Atlas = @import("Atlas.zig");
@@ -34,7 +28,6 @@ const Vector3 = scary_types.Vector3;
 // OBJECTIVES (possibly in the form of notes that you can pick up?)
 // INSERT SCARY ENEMY IDEAS HERE...
 
-const block_dim = rl.Vector3{ .x = 1, .y = 1, .z = 1 };
 const meters_per_block = 1;
 
 const crosshair_thickness_in_pixels = 2;
@@ -136,7 +129,7 @@ pub fn main() !void {
     const font = rl.LoadFont("data/FiraCode-Medium.ttf");
 
     var atlas = Atlas.init(arena_ally.allocator());
-    atlas.load("data/atlas.png", "data/atlas_data.json");
+    try atlas.load("data/atlas.png", "data/atlas_data.json");
 
     var shader: rl.Shader = rl.LoadShader(rl.TextFormat("data/shaders/lighting.vs", @intCast(c_int, 330)), rl.TextFormat("data/shaders/lighting.fs", @intCast(c_int, 330)));
     shader.locs[rl.SHADER_LOC_VECTOR_VIEW] = rl.GetShaderLocation(shader, "viewPos");
@@ -175,8 +168,8 @@ pub fn main() !void {
     var mesh_fb_ally = FixedBufferAllocator.init(mesh_mem);
 
     var chunk_meshes: [World.loaded_chunk_capacity]rl.Mesh = undefined;
-    for (world.loaded_chunks, 0..) |chunk, chunk_index| {
-        chunk_meshes[chunk_index] = renderer.cullMesh(mesh_fb_ally.allocator(), &chunk.block_data, &atlas) catch std.mem.zeroes(rl.Mesh);
+    for (0..World.loaded_chunk_capacity) |chunk_index| {
+        chunk_meshes[chunk_index] = renderer.cullMesh(mesh_fb_ally.allocator(), @intCast(u8, chunk_index), &world, &atlas) catch unreachable; //std.mem.zeroes(rl.Mesh);
         rl.UploadMesh(&chunk_meshes[chunk_index], false);
     }
 
@@ -184,6 +177,7 @@ pub fn main() !void {
         const screen_dim = rl.Vector2{ .x = @intToFloat(f32, rl.GetScreenWidth()), .y = @intToFloat(f32, rl.GetScreenHeight()) };
         const screen_mid = rl.Vector2Scale(screen_dim, 0.5);
         const aspect = screen_dim.x / screen_dim.y;
+        _ = aspect;
 
         if (rl.IsKeyPressed(rl.KEY_F1)) {
             debug_axes = !debug_axes;
@@ -225,6 +219,12 @@ pub fn main() !void {
         updateLightValues(shader, &light_source);
         rl.SetShaderValue(shader, shader.locs[rl.SHADER_LOC_VECTOR_VIEW], &camera_position, rl.SHADER_UNIFORM_VEC3);
 
+        var player_chunk = Vector3(i32){
+            .x = @floatToInt(i32, @divFloor(camera.position.x, @intToFloat(f32, Chunk.dim.x))),
+            .y = @floatToInt(i32, @divFloor(camera.position.y, @intToFloat(f32, Chunk.dim.y))),
+            .z = @floatToInt(i32, @divFloor(camera.position.z, @intToFloat(f32, Chunk.dim.z))),
+        };
+
         const crosshair_ray = rl.Ray{ .position = camera.position, .direction = rl.GetCameraForward(&camera) };
         var crosshair_ray_collision: rl.RayCollision = undefined;
         var collision_chunk_index: u8 = undefined;
@@ -244,12 +244,10 @@ pub fn main() !void {
                 // TODO(caleb): Only update mesh that changed.
 
                 // Update chunk mesh
-                for (chunk_meshes) |mesh| {
-                    renderer.unloadMesh(mesh);
-                }
                 mesh_fb_ally.reset();
-                for (world.loaded_chunks, 0..) |chunk, chunk_index| {
-                    chunk_meshes[chunk_index] = renderer.cullMesh(mesh_fb_ally.allocator(), &chunk.block_data, &atlas) catch std.mem.zeroes(rl.Mesh);
+                for (0..World.loaded_chunk_capacity) |chunk_index| {
+                    renderer.unloadMesh(chunk_meshes[chunk_index]);
+                    chunk_meshes[chunk_index] = renderer.cullMesh(mesh_fb_ally.allocator(), @intCast(u8, chunk_index), &world, &atlas) catch unreachable; //std.mem.zeroes(rl.Mesh);
                     rl.UploadMesh(&chunk_meshes[chunk_index], false);
                 }
             } else if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_RIGHT)) { // Place block
@@ -265,12 +263,10 @@ pub fn main() !void {
                 //               denseMapPut(&loaded_chunks[collision_chunk_index].block_data, 1, @floatToInt(i16, target_block.coords.x + d_target_block_coords.x), @floatToInt(i16, target_block.coords.y + d_target_block_coords.y), @floatToInt(i16, target_block.coords.z + d_target_block_coords.z));
 
                 // Update chunk mesh
-                for (chunk_meshes) |mesh| {
-                    renderer.unloadMesh(mesh);
-                }
                 mesh_fb_ally.reset();
-                for (world.loaded_chunks, 0..) |chunk, chunk_index| {
-                    chunk_meshes[chunk_index] = cullMesh(mesh_fb_ally.allocator(), &chunk.block_data, &sprite_sheet) catch std.mem.zeroes(rl.Mesh);
+                for (0..World.loaded_chunk_capacity) |chunk_index| {
+                    renderer.unloadMesh(chunk_meshes[chunk_index]);
+                    chunk_meshes[chunk_index] = renderer.cullMesh(mesh_fb_ally.allocator(), chunk_index, &world, &atlas) catch unreachable; //std.mem.zeroes(rl.Mesh);
                     rl.UploadMesh(&chunk_meshes[chunk_index], false);
                 }
             }
@@ -280,20 +276,20 @@ pub fn main() !void {
         rl.ClearBackground(rl.BLACK);
         rl.BeginMode3D(camera);
 
-        const frustum = Frustum.extractFrustum(&camera, aspect);
-        var chunk_box = AABB{ .min = rl.Vector3Zero(), .max = rl.Vector3Add(rl.Vector3Zero(), rl.Vector3{ .x = @intToFloat(f32, Chunk.dim.x), .y = @intToFloat(f32, Chunk.dim.x), .z = @intToFloat(f32, Chunk.dim.x) }) };
+        // const frustum = Frustum.extractFrustum(&camera, aspect);
+        // var chunk_box = AABB{ .min = rl.Vector3Zero(), .max = rl.Vector3Add(rl.Vector3Zero(), rl.Vector3{ .x = @intToFloat(f32, Chunk.dim.x), .y = @intToFloat(f32, Chunk.dim.x), .z = @intToFloat(f32, Chunk.dim.x) }) };
 
-        var should_draw_chunk = false;
-        if (frustum.containsAABB(&chunk_box)) { // FIXME(caleb): This is still borked...
-            should_draw_chunk = true;
-        }
+        // var should_draw_chunk = false;
+        // if (frustum.containsAABB(&chunk_box)) { // FIXME(caleb): This is still borked...
+        //     should_draw_chunk = true;
+        // }
 
         // Only draw this mesh if it's within the view frustum
-        if (should_draw_chunk) {
-            for (chunk_meshes) |mesh| {
-                rl.DrawMesh(mesh, default_material, rl.MatrixIdentity());
-            }
+        // if (should_draw_chunk) {
+        for (chunk_meshes) |mesh| {
+            rl.DrawMesh(mesh, default_material, rl.MatrixIdentity());
         }
+        // }
 
         rl.EndMode3D();
 
@@ -313,6 +309,10 @@ pub fn main() !void {
             rl.DrawTextEx(font, @ptrCast([*c]const u8, camera_pos_strz), rl.Vector2{ .x = 0, .y = y_offset }, font_size, font_spacing, rl.WHITE);
             y_offset += rl.MeasureTextEx(font, @ptrCast([*c]const u8, camera_pos_strz), font_size, font_spacing).y;
 
+            const player_chunk_strz = try std.fmt.bufPrintZ(&strz_buffer, "Chunk: (x:{d}, y:{d}, z:{d})", .{ player_chunk.x, player_chunk.y, player_chunk.z });
+            rl.DrawTextEx(font, @ptrCast([*c]const u8, player_chunk_strz), rl.Vector2{ .x = 0, .y = y_offset }, font_size, font_spacing, rl.WHITE);
+            y_offset += rl.MeasureTextEx(font, @ptrCast([*c]const u8, player_chunk_strz), font_size, font_spacing).y;
+
             if (crosshair_ray_collision.hit and crosshair_ray_collision.distance < crosshair_block_range) {
                 const target_block_point_strz = try std.fmt.bufPrintZ(&strz_buffer, "Target block: (x:{d:.2}, y:{d:.2}, z:{d:.2})", .{ target_block.coords.x, target_block.coords.y, target_block.coords.z });
                 rl.DrawTextEx(font, @ptrCast([*c]const u8, target_block_point_strz), rl.Vector2{ .x = 0, .y = y_offset }, font_size, font_spacing, rl.WHITE);
@@ -330,6 +330,7 @@ pub fn main() !void {
             const look_direction_strz = try std.fmt.bufPrintZ(&strz_buffer, "Look direction: {s}", .{@tagName(look_direction)});
             rl.DrawTextEx(font, @ptrCast([*c]const u8, look_direction_strz), rl.Vector2{ .x = 0, .y = y_offset }, font_size, font_spacing, rl.WHITE);
             // y_offset += rl.MeasureTextEx(font, @ptrCast([*c]const u8, look_direction_strz), font_size, font_spacing);
+
         }
 
         rl.EndDrawing();

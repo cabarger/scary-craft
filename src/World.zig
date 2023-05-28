@@ -35,6 +35,22 @@ pub fn init(ally: std.mem.Allocator) Self {
     return result;
 }
 
+// TODO(caleb): chunkFromMap?
+// pub fn chunkFromCoords(self: *Self, coords: Vector3(i32)) ?*Chunk {
+//     var chunk_hash_buf: [128]u8 = undefined;
+//     const chunk_coords_str = try std.fmt.bufPrint(&chunk_hash_buf, "{d}{d}{d}", .{ coords.x, coords.y, coords.z });
+//     const chunk_ptr = self.chunk_map.getPtr(hashString(chunk_coords_str));
+//     return chunk_ptr;
+// }
+
+pub fn chunkFromCoords(self: *Self, coords: Vector3(i32)) ?*Chunk {
+    for (self.loaded_chunks) |chunk| {
+        if (chunk.coords.equals(coords))
+            return chunk;
+    }
+    return null;
+}
+
 /// Creates a dummy world save.
 /// NOTE(caleb): This function will clobber the world save at 'world_save_path'.
 pub fn writeDummySave(world_save_path: []const u8) !void {
@@ -71,8 +87,8 @@ pub fn loadSave(world: *Self, world_save_path: []const u8) !void {
         try world.chunk_search_tree.insert(world_save_chunk);
     }
 
+    // TODO(caleb): This block should exist in main. Not here.
     std.debug.print("{?}\n", .{world.chunk_search_tree.root.?.value});
-
     try world.chunk_map.ensureTotalCapacity(loaded_chunk_capacity);
     try loadChunks(
         &world.chunk_search_tree,
@@ -156,6 +172,14 @@ fn loadChunks(
                 //     a value of 0 indicates that it needs a new entry in the save file.
                 world_chunk.id = 0;
                 for (&world_chunk.block_data) |*block| block.* = 0;
+
+                var block_z: u8 = 0;
+                while (block_z < Chunk.dim.z) : (block_z += 1) {
+                    var block_x: u8 = 0;
+                    while (block_x < Chunk.dim.x) : (block_x += 1) {
+                        world_chunk.put(1, block_x, 0, block_z);
+                    }
+                }
             } else { // Use save chunk's id to retrive from disk
                 const world_save_file = try std.fs.cwd().openFile("data/world.sav", .{});
                 defer world_save_file.close();

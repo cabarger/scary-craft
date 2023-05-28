@@ -1,6 +1,5 @@
-const rl = @cImport({
-    @cInclude("raylib.h");
-});
+const std = @import("std");
+const rl = @import("../rl.zig");
 
 const Self = @This();
 

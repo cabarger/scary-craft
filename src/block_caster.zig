@@ -1,14 +1,12 @@
 const std = @import("std");
-const rl = @cImport({
-    @cInclude("raylib.h");
-});
-
+const rl = @import("rl.zig");
 const Chunk = @import("Chunk.zig");
 const Plane = @import("math/Plane.zig");
+const Frustum = @import("math/Frustum.zig");
 
-const BlockHit = struct {
+pub const BlockHit = struct {
     coords: rl.Vector3, // TODO(caleb): Vector3(i32)
-    face: Plane.PlaneIndex,
+    face: Frustum.PlaneIndex,
 };
 
 /// Given a ray collision point, figure out the the world space block coords of the block being
@@ -33,7 +31,7 @@ pub fn blockHitFromPoint(chunk: *Chunk, p: rl.Vector3) BlockHit {
             .distance = rl.Vector3DotProduct(rl.Vector3Negate(face_normal), point_on_face),
         };
         if (std.math.approxEqAbs(f32, plane.distanceToPoint(p), 0, rl.EPSILON)) {
-            result.face = Plane.PlaneIndex.left;
+            result.face = Frustum.PlaneIndex.left;
         } else { // Bottom face
             point_on_face = rl.Vector3{ .x = 0, .y = @intToFloat(f32, block_y), .z = 0 };
             face_normal = rl.Vector3{ .x = 0, .y = 1, .z = 0 };
@@ -42,7 +40,7 @@ pub fn blockHitFromPoint(chunk: *Chunk, p: rl.Vector3) BlockHit {
                 .distance = rl.Vector3DotProduct(rl.Vector3Negate(face_normal), point_on_face),
             };
             if (std.math.approxEqAbs(f32, plane.distanceToPoint(p), 0, rl.EPSILON)) {
-                result.face = Plane.PlaneIndex.bottom;
+                result.face = Frustum.PlaneIndex.bottom;
             } else { // Back face
                 point_on_face = rl.Vector3{ .x = 0, .y = 0, .z = @intToFloat(f32, block_z) };
                 face_normal = rl.Vector3{ .x = 0, .y = 0, .z = 1 };
@@ -51,7 +49,7 @@ pub fn blockHitFromPoint(chunk: *Chunk, p: rl.Vector3) BlockHit {
                     .distance = rl.Vector3DotProduct(rl.Vector3Negate(face_normal), point_on_face),
                 };
                 if (std.math.approxEqAbs(f32, plane.distanceToPoint(p), 0, rl.EPSILON)) {
-                    result.face = Plane.PlaneIndex.far;
+                    result.face = Frustum.PlaneIndex.far;
                 } else unreachable; // NOTE(caleb): This was reacached after flying far away and looking at a block.
             }
         }
@@ -59,13 +57,13 @@ pub fn blockHitFromPoint(chunk: *Chunk, p: rl.Vector3) BlockHit {
     } else {
         if (std.math.approxEqRel(f32, @round(p.x), p.x, rl.EPSILON)) { // Right face
             result.coords = rl.Vector3{ .x = @intToFloat(f32, block_x - 1), .y = @intToFloat(f32, block_y), .z = @intToFloat(f32, block_z) };
-            result.face = Plane.PlaneIndex.right;
+            result.face = Frustum.PlaneIndex.right;
         } else if (std.math.approxEqRel(f32, @round(p.y), p.y, rl.EPSILON)) { // Top face
             result.coords = rl.Vector3{ .x = @intToFloat(f32, block_x), .y = @intToFloat(f32, block_y - 1), .z = @intToFloat(f32, block_z) };
-            result.face = Plane.PlaneIndex.top;
+            result.face = Frustum.PlaneIndex.top;
         } else if (std.math.approxEqRel(f32, @round(p.z), p.z, rl.EPSILON)) { // Front face
             result.coords = rl.Vector3{ .x = @intToFloat(f32, block_x), .y = @intToFloat(f32, block_y), .z = @intToFloat(f32, block_z - 1) };
-            result.face = Plane.PlaneIndex.near;
+            result.face = Frustum.PlaneIndex.near;
         } else unreachable;
     }
     return result;

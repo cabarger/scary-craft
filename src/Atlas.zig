@@ -1,7 +1,5 @@
 const std = @import("std");
-const rl = @cImport({
-    @cInclude("raylib.h");
-});
+const rl = @import("rl.zig");
 
 const AutoHashMap = std.AutoHashMap;
 
@@ -21,8 +19,8 @@ pub fn init(ally: std.mem.Allocator) Self {
     };
 }
 
-pub fn load(self: *Self, atlas_image_path: []const u8, atlas_config_path: []const u8) !void {
-    self.texture = rl.LoadTexture(atlas_image_path);
+pub fn load(self: *Self, comptime atlas_image_path: [:0]const u8, atlas_config_path: []const u8) !void {
+    self.texture = rl.LoadTexture(atlas_image_path.ptr);
     self.name_to_id = AutoHashMap(u64, u16).init(self.ally);
 
     var arena_ally = std.heap.ArenaAllocator.init(self.ally);
