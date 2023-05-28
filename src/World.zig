@@ -1,4 +1,5 @@
 const std = @import("std");
+const rl = @import("rl.zig");
 const scary_types = @import("scary_types.zig");
 const Chunk = @import("Chunk.zig");
 
@@ -31,17 +32,16 @@ pub fn init(ally: std.mem.Allocator) Self {
     var result: Self = undefined;
     result.ally = ally;
     result.chunk_map = AutoHashMap(u64, Chunk).init(ally);
+    result.chunk_map.ensureTotalCapacity(loaded_chunk_capacity) catch unreachable;
     result.chunk_search_tree = BST(WorldSaveChunk, cstGoLeft, cstFoundTarget).init(ally);
     return result;
 }
 
-// TODO(caleb): chunkFromMap?
-// pub fn chunkFromCoords(self: *Self, coords: Vector3(i32)) ?*Chunk {
-//     var chunk_hash_buf: [128]u8 = undefined;
-//     const chunk_coords_str = try std.fmt.bufPrint(&chunk_hash_buf, "{d}{d}{d}", .{ coords.x, coords.y, coords.z });
-//     const chunk_ptr = self.chunk_map.getPtr(hashString(chunk_coords_str));
-//     return chunk_ptr;
-// }
+pub fn hashChunk(coords: Vector3(i32)) u64 {
+    var chunk_hash_buf: [128]u8 = undefined;
+    const chunk_coords_str = std.fmt.bufPrint(&chunk_hash_buf, "{d}{d}{d}", .{ coords.x, coords.y, coords.z }) catch unreachable;
+    return hashString(chunk_coords_str);
+}
 
 pub fn chunkFromCoords(self: *Self, coords: Vector3(i32)) ?*Chunk {
     for (self.loaded_chunks) |chunk| {
@@ -86,28 +86,23 @@ pub fn loadSave(world: *Self, world_save_path: []const u8) !void {
         const world_save_chunk = try save_file_reader.readStruct(WorldSaveChunk);
         try world.chunk_search_tree.insert(world_save_chunk);
     }
-
-    // TODO(caleb): This block should exist in main. Not here.
-    std.debug.print("{?}\n", .{world.chunk_search_tree.root.?.value});
-    try world.chunk_map.ensureTotalCapacity(loaded_chunk_capacity);
-    try loadChunks(
-        &world.chunk_search_tree,
-        &world.chunk_map,
-        &world.loaded_chunks,
-        Vector3(i32){
-            .x = 0,
-            .y = 0,
-            .z = 0,
-        },
-    );
 }
 
-/// Given a pos in world space, return the eqv. chunk space coords.
-inline fn worldToChunkCoords(pos: Vector3(i32)) Vector3(i32) {
+/// Given a Vector(i32) in world space, return the eqv. chunk space coords.
+inline fn worldi32ToChunki32(pos: Vector3(i32)) Vector3(i32) {
     var result: Vector3(i32) = undefined;
     result.x = @divFloor(pos.x, Chunk.dim.x);
     result.y = @divFloor(pos.y, Chunk.dim.y);
     result.z = @divFloor(pos.z, Chunk.dim.z);
+    return result;
+}
+
+/// Given a vector of floats in world space, return the eqv. chunk space coords.
+inline fn worldf32ToChunki32(pos: rl.Vector3) Vector3(i32) {
+    var result: Vector3(i32) = undefined;
+    result.x = @floatToInt(i32, @divFloor(pos.x, @intToFloat(f32, Chunk.dim.x)));
+    result.y = @floatToInt(i32, @divFloor(pos.y, @intToFloat(f32, Chunk.dim.y)));
+    result.z = @floatToInt(i32, @divFloor(pos.z, @intToFloat(f32, Chunk.dim.z)));
     return result;
 }
 
@@ -140,11 +135,9 @@ fn queueChunks(
 }
 
 /// Load 'loaded_chunk_capacity' chunks into active_chunks around the player.
-fn loadChunks(
-    chunk_search_tree: *BST(WorldSaveChunk, cstGoLeft, cstFoundTarget),
-    chunk_map: *AutoHashMap(u64, Chunk),
-    loaded_chunks: []*Chunk,
-    player_pos: Vector3(i32),
+pub fn loadChunks(
+    self: *Self,
+    pos: rl.Vector3,
 ) !void {
     var loaded_chunk_count: u8 = 0;
     var current_chunk_ptr: *Chunk = undefined;
@@ -157,15 +150,16 @@ fn loadChunks(
         .len = 0,
     };
 
-    load_queue.pushAssumeCapacity(worldToChunkCoords(player_pos)); // Push start chunk
+    const start_chunk_coords = worldf32ToChunki32(pos);
+    load_queue.pushAssumeCapacity(start_chunk_coords); // Push start chunk
     while (loaded_chunk_count < loaded_chunk_capacity) {
         chunk_coords = load_queue.popAssumeNotEmpty();
-        queueChunks(&load_queue, chunk_coords, loaded_chunks, loaded_chunk_count);
+        queueChunks(&load_queue, chunk_coords, &self.loaded_chunks, loaded_chunk_count);
         chunk_coords_str = try std.fmt.bufPrint(&chunk_hash_buf, "{d}{d}{d}", .{ chunk_coords.x, chunk_coords.y, chunk_coords.z });
-        current_chunk_ptr = chunk_map.getPtr(hashString(chunk_coords_str)) orelse blk: { // Miss. Chunk probably needs to be loaded from disk :|
+        current_chunk_ptr = self.chunk_map.getPtr(hashString(chunk_coords_str)) orelse blk: { // Miss. Chunk probably needs to be loaded from disk :|
             var world_chunk: Chunk = undefined;
 
-            const world_chunk_node = chunk_search_tree.search(.{ .id = 0, .coords = chunk_coords });
+            const world_chunk_node = self.chunk_search_tree.search(.{ .id = 0, .coords = chunk_coords });
             if (world_chunk_node == null) { // Chunk isn't on disk. Initialize a new chunk.
                 world_chunk.coords = chunk_coords;
                 // NOTE(caleb): Chunk id is assigned either on world save or on chunk map eviction
@@ -173,13 +167,13 @@ fn loadChunks(
                 world_chunk.id = 0;
                 for (&world_chunk.block_data) |*block| block.* = 0;
 
-                var block_z: u8 = 0;
-                while (block_z < Chunk.dim.z) : (block_z += 1) {
-                    var block_x: u8 = 0;
-                    while (block_x < Chunk.dim.x) : (block_x += 1) {
-                        world_chunk.put(1, block_x, 0, block_z);
-                    }
-                }
+                // var block_z: u8 = 0;
+                // while (block_z < Chunk.dim.z) : (block_z += 1) {
+                //     var block_x: u8 = 0;
+                //     while (block_x < Chunk.dim.x) : (block_x += 1) {
+                //         world_chunk.put(1, block_x, 0, block_z);
+                //     }
+                // }
             } else { // Use save chunk's id to retrive from disk
                 const world_save_file = try std.fs.cwd().openFile("data/world.sav", .{});
                 defer world_save_file.close();
@@ -192,11 +186,39 @@ fn loadChunks(
                 world_chunk.block_data = try world_save_reader.readBytesNoEof(Chunk.dim.x * Chunk.dim.y * Chunk.dim.z);
             }
 
-            // TODO(caleb): Handle purging chunks from chunk map
-            chunk_map.putAssumeCapacityNoClobber(hashString(chunk_coords_str), world_chunk);
-            break :blk chunk_map.getPtr(hashString(chunk_coords_str)) orelse unreachable;
+            if (self.chunk_map.unmanaged.available == 0) { // Remove an entry from the chunk map
+                var chunk_to_remove_key: u64 = undefined;
+                var chunk_to_remove_distance: i32 = 0;
+                var chunk_map_iter = self.chunk_map.iterator();
+                outer: while (chunk_map_iter.next()) |entry| {
+
+                    // If this chunk is in loaded chunks than don't remove it
+                    for (self.loaded_chunks[0..loaded_chunk_count]) |chunk_ptr| {
+                        if (entry.value_ptr.coords.equals(chunk_ptr.coords))
+                            continue :outer;
+                    }
+
+                    // How far is this chunk from the start chunk pos?
+                    const distance_to_start = (try std.math.absInt(entry.value_ptr.coords.x) + try std.math.absInt(start_chunk_coords.x)) +
+                        (try std.math.absInt(entry.value_ptr.coords.x) + try std.math.absInt(start_chunk_coords.y)) +
+                        (try std.math.absInt(entry.value_ptr.coords.z) + try std.math.absInt(start_chunk_coords.z));
+
+                    if (distance_to_start > chunk_to_remove_distance) { // Update farthest chunk
+                        chunk_to_remove_key = hashChunk(entry.value_ptr.coords);
+                        chunk_to_remove_distance = distance_to_start;
+                    }
+                }
+
+                const removed_chunk_kv = self.chunk_map.fetchRemove(chunk_to_remove_key) orelse unreachable;
+                std.debug.print("removed chunk (x: {d}, y: {d}, z: {d})\n", .{ removed_chunk_kv.value.coords.x, removed_chunk_kv.value.coords.y, removed_chunk_kv.value.coords.z }); // TODO(caleb): write this to disk
+
+                self.chunk_map.clearRetainingCapacity();
+            }
+
+            self.chunk_map.putAssumeCapacityNoClobber(hashString(chunk_coords_str), world_chunk);
+            break :blk self.chunk_map.getPtr(hashString(chunk_coords_str)) orelse unreachable;
         };
-        loaded_chunks[loaded_chunk_count] = current_chunk_ptr;
+        self.loaded_chunks[loaded_chunk_count] = current_chunk_ptr;
         loaded_chunk_count += 1;
         std.debug.print("Loaded chunk: ({d},{d},{d})\n", .{ current_chunk_ptr.coords.x, current_chunk_ptr.coords.y, current_chunk_ptr.coords.z });
     }

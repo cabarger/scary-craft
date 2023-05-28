@@ -159,9 +159,14 @@ pub fn main() !void {
     camera.fovy = fovy;
     camera.projection = rl.CAMERA_PERSPECTIVE;
 
+    var last_position = camera.position;
+
     try World.writeDummySave("data/world.sav");
     var world = World.init(arena_ally.allocator());
     try world.loadSave("data/world.sav");
+
+    // Initital chunks around player
+    try world.loadChunks(camera.position);
 
     // Reserve 512Kb for mesh allocations
     var mesh_mem = try arena_ally.allocator().alloc(u8, 512 * 1024);
@@ -219,11 +224,21 @@ pub fn main() !void {
         updateLightValues(shader, &light_source);
         rl.SetShaderValue(shader, shader.locs[rl.SHADER_LOC_VECTOR_VIEW], &camera_position, rl.SHADER_UNIFORM_VEC3);
 
-        var player_chunk = Vector3(i32){
+        const player_chunk = Vector3(i32){
             .x = @floatToInt(i32, @divFloor(camera.position.x, @intToFloat(f32, Chunk.dim.x))),
             .y = @floatToInt(i32, @divFloor(camera.position.y, @intToFloat(f32, Chunk.dim.y))),
             .z = @floatToInt(i32, @divFloor(camera.position.z, @intToFloat(f32, Chunk.dim.z))),
         };
+
+        const last_chunk = Vector3(i32){
+            .x = @floatToInt(i32, @divFloor(last_position.x, @intToFloat(f32, Chunk.dim.x))),
+            .y = @floatToInt(i32, @divFloor(last_position.y, @intToFloat(f32, Chunk.dim.y))),
+            .z = @floatToInt(i32, @divFloor(last_position.z, @intToFloat(f32, Chunk.dim.z))),
+        };
+        if (!last_chunk.equals(player_chunk))
+            try world.loadChunks(camera.position);
+
+        last_position = camera.position;
 
         const crosshair_ray = rl.Ray{ .position = camera.position, .direction = rl.GetCameraForward(&camera) };
         var crosshair_ray_collision: rl.RayCollision = undefined;
