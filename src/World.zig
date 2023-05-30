@@ -5,6 +5,7 @@ const Chunk = @import("Chunk.zig");
 
 const SmolQ = scary_types.SmolQ;
 const BST = scary_types.BST;
+const BSTExtra = scary_types.BSTExtra;
 const Vector3 = scary_types.Vector3;
 const AutoHashMap = std.AutoHashMap;
 
@@ -13,27 +14,28 @@ const hashString = std.hash_map.hashString;
 const Self = @This();
 
 pub const loaded_chunk_capacity = 7;
+pub const chunk_cache_capacity = loaded_chunk_capacity * 4;
 
 const WorldSaveHeader = packed struct {
     chunk_count: u32,
 };
 
-const WorldSaveChunk = packed struct {
-    id: u32, // NOTE(caleb): This will act as an index into the world save.
+const ChunkHandle = packed struct {
+    index: u32,
     coords: Vector3(i32),
 };
 
 ally: std.mem.Allocator,
-chunk_map: AutoHashMap(u64, Chunk),
-chunk_search_tree: BST(WorldSaveChunk, cstGoLeft, cstFoundTarget),
+chunk_cache: [chunk_cache_capacity]Chunk,
 loaded_chunks: [loaded_chunk_capacity]*Chunk,
+chunk_cache_st: BSTExtra(ChunkHandle, .{ .preheated_node_count = chunk_cache_capacity, .growable = false }, cstGoLeft, cstFoundTarget),
+world_chunk_st: BST(ChunkHandle, cstGoLeft, cstFoundTarget),
 
 pub fn init(ally: std.mem.Allocator) Self {
     var result: Self = undefined;
     result.ally = ally;
-    result.chunk_map = AutoHashMap(u64, Chunk).init(ally);
-    result.chunk_map.ensureTotalCapacity(loaded_chunk_capacity) catch unreachable;
-    result.chunk_search_tree = BST(WorldSaveChunk, cstGoLeft, cstFoundTarget).init(ally);
+    result.chunk_cache_st = BSTExtra(ChunkHandle, .{ .preheated_node_count = chunk_cache_capacity, .growable = false }, cstGoLeft, cstFoundTarget).init(ally);
+    result.world_chunk_st = BST(ChunkHandle, cstGoLeft, cstFoundTarget).init(ally);
     return result;
 }
 
@@ -60,7 +62,7 @@ pub fn writeDummySave(world_save_path: []const u8) !void {
     // Create a chunk slice 16x16 at y = 0;
     var test_chunk: Chunk = undefined;
     test_chunk.coords = Vector3(i32){ .x = 0, .y = 0, .z = 0 };
-    test_chunk.id = 1;
+    test_chunk.index = 1;
     for (&test_chunk.block_data) |*byte| byte.* = 0;
 
     var block_z: u8 = 0;
@@ -73,7 +75,7 @@ pub fn writeDummySave(world_save_path: []const u8) !void {
 
     const world_save_writer = world_save_file.writer();
     try world_save_writer.writeStruct(WorldSaveHeader{ .chunk_count = 1 });
-    try world_save_writer.writeStruct(WorldSaveChunk{ .id = test_chunk.id, .coords = test_chunk.coords });
+    try world_save_writer.writeStruct(ChunkHandle{ .index = test_chunk.index, .coords = test_chunk.coords });
     try world_save_writer.writeAll(&test_chunk.block_data);
 }
 
@@ -83,8 +85,8 @@ pub fn loadSave(world: *Self, world_save_path: []const u8) !void {
     const save_file_reader = world_save_file.reader();
     const world_save_header = try save_file_reader.readStruct(WorldSaveHeader);
     for (0..world_save_header.chunk_count) |_| {
-        const world_save_chunk = try save_file_reader.readStruct(WorldSaveChunk);
-        try world.chunk_search_tree.insert(world_save_chunk);
+        const world_save_chunk = try save_file_reader.readStruct(ChunkHandle);
+        try world.world_chunk_st.insert(world_save_chunk);
     }
 }
 
@@ -140,10 +142,7 @@ pub fn loadChunks(
     pos: rl.Vector3,
 ) !void {
     var loaded_chunk_count: u8 = 0;
-    var current_chunk_ptr: *Chunk = undefined;
     var chunk_coords: Vector3(i32) = undefined;
-    var chunk_hash_buf: [128]u8 = undefined;
-    var chunk_coords_str: []u8 = undefined;
 
     var load_queue = SmolQ(Vector3(i32), loaded_chunk_capacity){
         .items = undefined,
@@ -155,82 +154,74 @@ pub fn loadChunks(
     while (loaded_chunk_count < loaded_chunk_capacity) {
         chunk_coords = load_queue.popAssumeNotEmpty();
         queueChunks(&load_queue, chunk_coords, &self.loaded_chunks, loaded_chunk_count);
-        chunk_coords_str = try std.fmt.bufPrint(&chunk_hash_buf, "{d}{d}{d}", .{ chunk_coords.x, chunk_coords.y, chunk_coords.z });
-        current_chunk_ptr = self.chunk_map.getPtr(hashString(chunk_coords_str)) orelse blk: { // Miss. Chunk probably needs to be loaded from disk :|
-            var world_chunk: Chunk = undefined;
+        const chunk_cache_handle = self.chunk_cache_st.search(.{ .index = 0, .coords = chunk_coords }) orelse blk: { // Miss. Chunk probably needs to be loaded from disk :|
+            var chunk_cache_index = self.chunk_cache_st.count;
 
-            const world_chunk_node = self.chunk_search_tree.search(.{ .id = 0, .coords = chunk_coords });
-            if (world_chunk_node == null) { // Chunk isn't on disk. Initialize a new chunk.
-                world_chunk.coords = chunk_coords;
-                // NOTE(caleb): Chunk id is assigned either on world save or on chunk map eviction
-                //     a value of 0 indicates that it needs a new entry in the save file.
-                world_chunk.id = 0;
-                for (&world_chunk.block_data) |*block| block.* = 0;
-
-                // var block_z: u8 = 0;
-                // while (block_z < Chunk.dim.z) : (block_z += 1) {
-                //     var block_x: u8 = 0;
-                //     while (block_x < Chunk.dim.x) : (block_x += 1) {
-                //         world_chunk.put(1, block_x, 0, block_z);
-                //     }
-                // }
-            } else { // Use save chunk's id to retrive from disk
-                const world_save_file = try std.fs.cwd().openFile("data/world.sav", .{});
-                defer world_save_file.close();
-                const world_save_reader = world_save_file.reader();
-                try world_save_reader.skipBytes(@sizeOf(WorldSaveHeader), .{});
-                try world_save_reader.skipBytes((@sizeOf(WorldSaveChunk) + @intCast(u32, Chunk.dim.x) * @intCast(u32, Chunk.dim.y) * @intCast(i32, Chunk.dim.z)) * (world_chunk_node.?.id - 1), .{});
-                const world_save_chunk = try world_save_reader.readStruct(WorldSaveChunk);
-                world_chunk.id = world_save_chunk.id;
-                world_chunk.coords = world_save_chunk.coords;
-                world_chunk.block_data = try world_save_reader.readBytesNoEof(Chunk.dim.x * Chunk.dim.y * Chunk.dim.z);
-            }
-
-            if (self.chunk_map.unmanaged.available == 0) { // Remove an entry from the chunk map
-                var chunk_to_remove_key: u64 = undefined;
+            // Find a chunk to remove from the chunk cache
+            if (self.chunk_cache_st.count + 1 > chunk_cache_capacity) {
+                var chunk_to_remove_ptr: *Chunk = undefined;
                 var chunk_to_remove_distance: i32 = 0;
-                var chunk_map_iter = self.chunk_map.iterator();
-                outer: while (chunk_map_iter.next()) |entry| {
-
+                outer: for (&self.chunk_cache) |*cached_chunk_ptr| {
                     // If this chunk is in loaded chunks than don't remove it
-                    for (self.loaded_chunks[0..loaded_chunk_count]) |chunk_ptr| {
-                        if (entry.value_ptr.coords.equals(chunk_ptr.coords))
-                            continue :outer;
+                    for (self.loaded_chunks[0..loaded_chunk_count]) |loaded_chunk_ptr| {
+                        if (cached_chunk_ptr == loaded_chunk_ptr) continue :outer;
                     }
-
                     // How far is this chunk from the start chunk pos?
-                    const distance_to_start = (try std.math.absInt(entry.value_ptr.coords.x) + try std.math.absInt(start_chunk_coords.x)) +
-                        (try std.math.absInt(entry.value_ptr.coords.x) + try std.math.absInt(start_chunk_coords.y)) +
-                        (try std.math.absInt(entry.value_ptr.coords.z) + try std.math.absInt(start_chunk_coords.z));
-
-                    if (distance_to_start > chunk_to_remove_distance) { // Update farthest chunk
-                        chunk_to_remove_key = hashChunk(entry.value_ptr.coords);
+                    const distance_to_start = (try std.math.absInt(cached_chunk_ptr.coords.x) + try std.math.absInt(start_chunk_coords.x)) +
+                        (try std.math.absInt(cached_chunk_ptr.coords.x) + try std.math.absInt(start_chunk_coords.y)) +
+                        (try std.math.absInt(cached_chunk_ptr.coords.z) + try std.math.absInt(start_chunk_coords.z));
+                    // Update farthest chunk
+                    if (distance_to_start > chunk_to_remove_distance) {
+                        chunk_to_remove_ptr = cached_chunk_ptr;
                         chunk_to_remove_distance = distance_to_start;
                     }
                 }
 
-                const removed_chunk_kv = self.chunk_map.fetchRemove(chunk_to_remove_key) orelse unreachable;
-                std.debug.print("removed chunk (x: {d}, y: {d}, z: {d})\n", .{ removed_chunk_kv.value.coords.x, removed_chunk_kv.value.coords.y, removed_chunk_kv.value.coords.z }); // TODO(caleb): write this to disk
+                const removed_chunk_handle = self.chunk_cache_st.remove(.{ .index = 0, .coords = chunk_to_remove_ptr.coords }) orelse unreachable;
+                chunk_cache_index = removed_chunk_handle.index;
 
-                self.chunk_map.clearRetainingCapacity();
+                // TODO(caleb): Write removed chunk to disk
+                std.debug.print("Removed chunk (x: {d}, y: {d}, z: {d})\n", .{
+                    self.chunk_cache[chunk_cache_index].coords.x,
+                    self.chunk_cache[chunk_cache_index].coords.y,
+                    self.chunk_cache[chunk_cache_index].coords.z,
+                });
             }
 
-            self.chunk_map.putAssumeCapacityNoClobber(hashString(chunk_coords_str), world_chunk);
-            break :blk self.chunk_map.getPtr(hashString(chunk_coords_str)) orelse unreachable;
+            const world_chunk_handle = self.world_chunk_st.search(.{ .index = 0, .coords = chunk_coords });
+            if (world_chunk_handle != null) { // Use save chunk's id to retrive from disk
+                const world_save_file = try std.fs.cwd().openFile("data/world.sav", .{});
+                defer world_save_file.close();
+                const world_save_reader = world_save_file.reader();
+                try world_save_reader.skipBytes(@sizeOf(WorldSaveHeader), .{});
+                try world_save_reader.skipBytes((@sizeOf(ChunkHandle) + @intCast(u32, Chunk.dim.x) * @intCast(u32, Chunk.dim.y) * @intCast(i32, Chunk.dim.z)) * (world_chunk_handle.?.index - 1), .{});
+                const world_save_chunk = try world_save_reader.readStruct(ChunkHandle);
+
+                self.chunk_cache[chunk_cache_index].index = world_save_chunk.index;
+                self.chunk_cache[chunk_cache_index].coords = world_save_chunk.coords;
+                self.chunk_cache[chunk_cache_index].block_data = try world_save_reader.readBytesNoEof(Chunk.dim.x * Chunk.dim.y * Chunk.dim.z);
+            } else {
+                self.chunk_cache[chunk_cache_index].index = 0;
+                self.chunk_cache[chunk_cache_index].coords = chunk_coords;
+                for (&self.chunk_cache[chunk_cache_index].block_data) |*byte| byte.* = 0;
+            }
+
+            self.chunk_cache_st.insert(.{ .index = chunk_cache_index, .coords = chunk_coords }) catch unreachable;
+            break :blk ChunkHandle{ .index = chunk_cache_index, .coords = chunk_coords };
         };
-        self.loaded_chunks[loaded_chunk_count] = current_chunk_ptr;
+        self.loaded_chunks[loaded_chunk_count] = &self.chunk_cache[chunk_cache_handle.index];
         loaded_chunk_count += 1;
-        std.debug.print("Loaded chunk: ({d},{d},{d})\n", .{ current_chunk_ptr.coords.x, current_chunk_ptr.coords.y, current_chunk_ptr.coords.z });
+        std.debug.print("Loaded chunk: ({d},{d},{d})\n", .{ chunk_coords.x, chunk_coords.y, chunk_coords.z });
     }
 }
 
-fn cstFoundTarget(a: WorldSaveChunk, b: WorldSaveChunk) bool {
+fn cstFoundTarget(a: ChunkHandle, b: ChunkHandle) bool {
     var result = false;
     result = a.coords.equals(b.coords);
     return result;
 }
 
-fn cstGoLeft(a: WorldSaveChunk, b: WorldSaveChunk) bool {
+fn cstGoLeft(a: ChunkHandle, b: ChunkHandle) bool {
     var check_left: bool = undefined;
     if (a.coords.x < b.coords.x) { // Check x coords
         check_left = true;

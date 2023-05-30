@@ -24,14 +24,14 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const rl_lib = rl.addRaylib(b, exe.target, exe.optimize);
-    rl_lib.installHeader("raylib/src/raylib.h", "raylib.h");
-    rl_lib.installHeader("raylib/src/raymath.h", "raymath.h");
-    rl_lib.installHeader("raylib/src/rcamera.h", "rcamera.h");
-    rl_lib.installHeader("raylib/src/rlgl.h", "rlgl.h");
+    const raylib = rl.addRaylib(b, exe.target, exe.optimize);
+    raylib.installHeader("raylib/src/raylib.h", "raylib.h");
+    raylib.installHeader("raylib/src/raymath.h", "raymath.h");
+    raylib.installHeader("raylib/src/rcamera.h", "rcamera.h");
+    raylib.installHeader("raylib/src/rlgl.h", "rlgl.h");
     exe.addIncludePath("zig-out/include");
     exe.linkLibC();
-    exe.linkLibrary(rl_lib);
+    exe.linkLibrary(raylib);
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default

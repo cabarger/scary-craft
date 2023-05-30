@@ -1,4 +1,5 @@
 const std = @import("std");
+const MemoryPoolExtra = std.heap.MemoryPoolExtra;
 
 pub fn Vector3(comptime T: type) type {
     return packed struct {
@@ -54,10 +55,22 @@ pub fn SmolQ(comptime T: type, comptime capacity: u8) type {
     };
 }
 
-// NOTE(caleb): This might be better off *not* a generic. I'm not completly happy with this implementation.
-//    If I end up needing another binary search tree than we will see how it holds up.
 pub fn BST(
     comptime T: type,
+    comptime goLeftFn: fn (lhs: T, rhs: T) bool,
+    comptime foundTargetFn: fn (lhs: T, rhs: T) bool,
+) type {
+    return BSTExtra(T, .{}, goLeftFn, foundTargetFn);
+}
+
+pub const BSTOptions = struct {
+    preheated_node_count: ?usize = null,
+    growable: bool = true,
+};
+
+pub fn BSTExtra(
+    comptime T: type,
+    comptime bst_options: BSTOptions,
     comptime goLeftFn: fn (lhs: T, rhs: T) bool,
     comptime foundTargetFn: fn (lhs: T, rhs: T) bool,
 ) type {
@@ -72,16 +85,29 @@ pub fn BST(
 
         root: ?*BSTNode,
         ally: std.mem.Allocator,
+        pool: MemoryPoolExtra(BSTNode, .{ .alignment = @alignOf(BSTNode), .growable = bst_options.growable }),
+        count: u32,
 
         pub fn init(ally: std.mem.Allocator) Self {
-            return Self{
-                .root = null,
-                .ally = ally,
-            };
+            if (bst_options.preheated_node_count != null) {
+                return Self{
+                    .root = null,
+                    .ally = ally,
+                    .pool = MemoryPoolExtra(BSTNode, .{ .alignment = @alignOf(BSTNode), .growable = bst_options.growable }).initPreheated(ally, bst_options.preheated_node_count.?) catch unreachable,
+                    .count = 0,
+                };
+            } else {
+                return Self{
+                    .root = null,
+                    .ally = ally,
+                    .pool = MemoryPoolExtra(BSTNode, .{ .alignment = @alignOf(BSTNode), .growable = bst_options.growable }).init(ally),
+                    .count = 0,
+                };
+            }
         }
 
-        pub fn search(this: *Self, value: T) ?T {
-            var current_node = this.root;
+        pub fn search(self: *Self, value: T) ?T {
+            var current_node = self.root;
             while (current_node != null) {
                 if (foundTargetFn(value, current_node.?.value)) {
                     return current_node.?.value;
@@ -95,8 +121,42 @@ pub fn BST(
             return null;
         }
 
-        pub fn insert(this: *Self, value: T) !void {
-            var current_node = this.root;
+        fn removeStartingAt(self: *Self, start_node: ?*BSTNode, value: T) ?T {
+            var current_node = start_node;
+            var parent_edge: ?*?*BSTNode = null;
+            while (current_node != null) {
+                if (foundTargetFn(value, current_node.?.value)) {
+                    const node = current_node.?;
+                    if (parent_edge != null) {
+                        parent_edge.?.* = null;
+                    }
+                    self.pool.destroy(@ptrCast(*BSTNode, current_node));
+                    self.count -= 1;
+
+                    if (node.left != null)
+                        self.insert(self.removeStartingAt(node.left, node.left.?.value) orelse unreachable) catch unreachable;
+                    if (node.right != null)
+                        self.insert(self.removeStartingAt(node.right, node.right.?.value) orelse unreachable) catch unreachable;
+
+                    return node.value;
+                }
+                if (goLeftFn(value, current_node.?.value)) {
+                    parent_edge = &current_node.?.left;
+                    current_node = current_node.?.left;
+                } else {
+                    parent_edge = &current_node.?.right;
+                    current_node = current_node.?.right;
+                }
+            }
+            return null;
+        }
+
+        pub fn remove(self: *Self, value: T) ?T {
+            return self.removeStartingAt(self.root, value);
+        }
+
+        pub fn insert(self: *Self, value: T) !void {
+            var current_node = self.root;
             while (current_node != null) {
                 if (goLeftFn(value, current_node.?.value)) {
                     current_node = current_node.?.left;
@@ -104,14 +164,17 @@ pub fn BST(
                     current_node = current_node.?.right;
                 }
             }
-            current_node = try this.ally.create(BSTNode);
+
+            current_node = try self.pool.create();
             current_node.?.value = value;
             current_node.?.right = null;
             current_node.?.left = null;
 
-            if (this.root == null) { // Edge case where this is the first insertion.
-                this.root = current_node;
+            if (self.root == null) { // Tree is empty
+                self.root = current_node;
             }
+
+            self.count += 1;
         }
     };
 }

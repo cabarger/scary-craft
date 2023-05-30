@@ -12,7 +12,7 @@ pub const u_dimx = std.meta.Int(std.builtin.Signedness.unsigned, std.math.log2_i
 pub const u_dimy = std.meta.Int(std.builtin.Signedness.unsigned, std.math.log2_int(u16, std.math.ceilPowerOfTwoAssert(u16, dim.y)));
 pub const u_dimz = std.meta.Int(std.builtin.Signedness.unsigned, std.math.log2_int(u16, std.math.ceilPowerOfTwoAssert(u16, dim.z)));
 
-id: u32,
+index: u32,
 coords: Vector3(i32),
 block_data: [dim.x * dim.y * dim.z]u8,
 
