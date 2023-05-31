@@ -13,8 +13,8 @@ const hashString = std.hash_map.hashString;
 
 const Self = @This();
 
-pub const loaded_chunk_capacity = 7;
-pub const chunk_cache_capacity = loaded_chunk_capacity * 4;
+pub const loaded_chunk_capacity = 14;
+pub const chunk_cache_capacity = loaded_chunk_capacity * 2;
 
 const WorldSaveHeader = packed struct {
     chunk_count: u32,
@@ -149,6 +149,7 @@ pub fn loadChunks(
         .len = 0,
     };
 
+    std.debug.print("------------------------------\n", .{});
     const start_chunk_coords = worldf32ToChunki32(pos);
     load_queue.pushAssumeCapacity(start_chunk_coords); // Push start chunk
     while (loaded_chunk_count < loaded_chunk_capacity) {
@@ -167,9 +168,9 @@ pub fn loadChunks(
                         if (cached_chunk_ptr == loaded_chunk_ptr) continue :outer;
                     }
                     // How far is this chunk from the start chunk pos?
-                    const distance_to_start = (try std.math.absInt(cached_chunk_ptr.coords.x) + try std.math.absInt(start_chunk_coords.x)) +
-                        (try std.math.absInt(cached_chunk_ptr.coords.x) + try std.math.absInt(start_chunk_coords.y)) +
-                        (try std.math.absInt(cached_chunk_ptr.coords.z) + try std.math.absInt(start_chunk_coords.z));
+                    const distance_to_start = (try std.math.absInt(start_chunk_coords.x - cached_chunk_ptr.coords.x)) +
+                        (try std.math.absInt(start_chunk_coords.y - cached_chunk_ptr.coords.y)) +
+                        (try std.math.absInt(start_chunk_coords.z - cached_chunk_ptr.coords.z));
                     // Update farthest chunk
                     if (distance_to_start > chunk_to_remove_distance) {
                         chunk_to_remove_ptr = cached_chunk_ptr;
@@ -206,8 +207,9 @@ pub fn loadChunks(
                 for (&self.chunk_cache[chunk_cache_index].block_data) |*byte| byte.* = 0;
             }
 
-            self.chunk_cache_st.insert(.{ .index = chunk_cache_index, .coords = chunk_coords }) catch unreachable;
-            break :blk ChunkHandle{ .index = chunk_cache_index, .coords = chunk_coords };
+            const inserted_chunk_handle = ChunkHandle{ .index = chunk_cache_index, .coords = chunk_coords };
+            self.chunk_cache_st.insert(inserted_chunk_handle) catch unreachable;
+            break :blk inserted_chunk_handle;
         };
         self.loaded_chunks[loaded_chunk_count] = &self.chunk_cache[chunk_cache_handle.index];
         loaded_chunk_count += 1;

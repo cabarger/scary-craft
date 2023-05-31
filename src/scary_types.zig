@@ -126,17 +126,24 @@ pub fn BSTExtra(
             var parent_edge: ?*?*BSTNode = null;
             while (current_node != null) {
                 if (foundTargetFn(value, current_node.?.value)) {
-                    const node = current_node.?;
+                    const node = current_node.?.*;
                     if (parent_edge != null) {
                         parent_edge.?.* = null;
                     }
+
+                    if (current_node == self.root) {
+                        self.root = null;
+                    }
+
                     self.pool.destroy(@ptrCast(*BSTNode, current_node));
                     self.count -= 1;
 
-                    if (node.left != null)
+                    if (node.left != null) {
                         self.insert(self.removeStartingAt(node.left, node.left.?.value) orelse unreachable) catch unreachable;
-                    if (node.right != null)
+                    }
+                    if (node.right != null) {
                         self.insert(self.removeStartingAt(node.right, node.right.?.value) orelse unreachable) catch unreachable;
+                    }
 
                     return node.value;
                 }
@@ -157,10 +164,13 @@ pub fn BSTExtra(
 
         pub fn insert(self: *Self, value: T) !void {
             var current_node = self.root;
+            var parent_edge: ?*?*BSTNode = null;
             while (current_node != null) {
                 if (goLeftFn(value, current_node.?.value)) {
+                    parent_edge = &current_node.?.left;
                     current_node = current_node.?.left;
                 } else {
+                    parent_edge = &current_node.?.right;
                     current_node = current_node.?.right;
                 }
             }
@@ -169,6 +179,9 @@ pub fn BSTExtra(
             current_node.?.value = value;
             current_node.?.right = null;
             current_node.?.left = null;
+            if (parent_edge != null) {
+                parent_edge.?.* = current_node;
+            }
 
             if (self.root == null) { // Tree is empty
                 self.root = current_node;

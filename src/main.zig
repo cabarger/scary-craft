@@ -174,7 +174,7 @@ pub fn main() !void {
 
     var chunk_meshes: [World.loaded_chunk_capacity]rl.Mesh = undefined;
     for (0..World.loaded_chunk_capacity) |chunk_index| {
-        chunk_meshes[chunk_index] = renderer.cullMesh(mesh_fb_ally.allocator(), @intCast(u8, chunk_index), &world, &atlas) catch unreachable; //std.mem.zeroes(rl.Mesh);
+        chunk_meshes[chunk_index] = renderer.cullMesh(mesh_fb_ally.allocator(), @intCast(u8, chunk_index), &world, &atlas) catch std.mem.zeroes(rl.Mesh);
         rl.UploadMesh(&chunk_meshes[chunk_index], false);
     }
 
@@ -235,8 +235,15 @@ pub fn main() !void {
             .y = @floatToInt(i32, @divFloor(last_position.y, @intToFloat(f32, Chunk.dim.y))),
             .z = @floatToInt(i32, @divFloor(last_position.z, @intToFloat(f32, Chunk.dim.z))),
         };
-        if (!last_chunk.equals(player_chunk))
+        if (!last_chunk.equals(player_chunk)) {
             try world.loadChunks(camera.position);
+            mesh_fb_ally.reset();
+            for (0..World.loaded_chunk_capacity) |chunk_index| {
+                renderer.unloadMesh(chunk_meshes[chunk_index]);
+                chunk_meshes[chunk_index] = renderer.cullMesh(mesh_fb_ally.allocator(), @intCast(u8, chunk_index), &world, &atlas) catch std.mem.zeroes(rl.Mesh);
+                rl.UploadMesh(&chunk_meshes[chunk_index], false);
+            }
+        }
 
         last_position = camera.position;
 
