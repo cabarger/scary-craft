@@ -1,7 +1,7 @@
 const std = @import("std");
 const rl = @import("rl.zig");
 const scary_types = @import("scary_types.zig");
-const renderer = @import("renderer.zig");
+const mesher = @import("mesher.zig");
 const block_caster = @import("block_caster.zig");
 
 const Chunk = @import("Chunk.zig");
@@ -14,6 +14,7 @@ const AutoHashMap = std.AutoHashMap;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const FixedBufferAllocator = std.heap.FixedBufferAllocator;
+const MemoryPoolExtra = std.heap.MemoryPoolExtra;
 
 const SmolQ = scary_types.SmolQ;
 const BST = scary_types.BST;
@@ -122,7 +123,7 @@ pub fn main() !void {
     rl.DisableCursor();
 
     var page_ally = std.heap.page_allocator;
-    var back_buffer = try page_ally.alloc(u8, 1024 * 1024 * 1); // 1mb
+    var back_buffer = try page_ally.alloc(u8, 1024 * 1024 * 2); // 2mb
     var fb_ally = std.heap.FixedBufferAllocator.init(back_buffer);
     var arena_ally = std.heap.ArenaAllocator.init(fb_ally.allocator());
 
@@ -165,17 +166,13 @@ pub fn main() !void {
     var world = World.init(arena_ally.allocator());
     try world.loadSave("data/world.sav");
 
-    // Initital chunks around player
     try world.loadChunks(camera.position);
 
-    // Reserve 512Kb for mesh allocations
-    var mesh_mem = try arena_ally.allocator().alloc(u8, 512 * 1024);
-    var mesh_fb_ally = FixedBufferAllocator.init(mesh_mem);
-
-    var chunk_meshes: [World.loaded_chunk_capacity]rl.Mesh = undefined;
-    for (0..World.loaded_chunk_capacity) |chunk_index| {
-        chunk_meshes[chunk_index] = renderer.cullMesh(mesh_fb_ally.allocator(), @intCast(u8, chunk_index), &world, &atlas) catch std.mem.zeroes(rl.Mesh);
-        rl.UploadMesh(&chunk_meshes[chunk_index], false);
+    var mesh_pool = try MemoryPoolExtra([mesher.mem_per_chunk]u8, .{ .alignment = null, .growable = false }).initPreheated(arena_ally.allocator(), World.loaded_chunk_capacity);
+    var chunk_meshes: [World.loaded_chunk_capacity]mesher.ChunkMesh = undefined;
+    for (&chunk_meshes, 0..) |*chunk_mesh, chunk_index| {
+        chunk_mesh.* = mesher.cullMesh(&mesh_pool, @intCast(u8, chunk_index), &world, &atlas) catch unreachable;
+        rl.UploadMesh(&chunk_mesh.mesh, false);
     }
 
     while (!rl.WindowShouldClose()) {
@@ -237,21 +234,21 @@ pub fn main() !void {
         };
         if (!last_chunk.equals(player_chunk)) {
             try world.loadChunks(camera.position);
-            mesh_fb_ally.reset();
-            for (0..World.loaded_chunk_capacity) |chunk_index| {
-                renderer.unloadMesh(chunk_meshes[chunk_index]);
-                chunk_meshes[chunk_index] = renderer.cullMesh(mesh_fb_ally.allocator(), @intCast(u8, chunk_index), &world, &atlas) catch std.mem.zeroes(rl.Mesh);
-                rl.UploadMesh(&chunk_meshes[chunk_index], false);
-            }
+            mesher.updateChunkMeshes(&mesh_pool, &chunk_meshes, &world, &atlas);
         }
 
         last_position = camera.position;
 
         const crosshair_ray = rl.Ray{ .position = camera.position, .direction = rl.GetCameraForward(&camera) };
         var crosshair_ray_collision: rl.RayCollision = undefined;
-        var collision_chunk_index: u8 = undefined;
-        for (chunk_meshes) |mesh| {
-            crosshair_ray_collision = rl.GetRayCollisionMesh(crosshair_ray, mesh, rl.MatrixIdentity());
+        crosshair_ray_collision.hit = false;
+        var collision_chunk_index: usize = undefined;
+        for (0..World.loaded_chunk_capacity) |chunk_index| {
+            crosshair_ray_collision = rl.GetRayCollisionMesh(crosshair_ray, chunk_meshes[chunk_index].mesh, rl.MatrixIdentity());
+            if (crosshair_ray_collision.hit) {
+                collision_chunk_index = chunk_index;
+                break;
+            }
         }
         const look_direction = lookDirection(crosshair_ray.direction);
 
@@ -264,14 +261,7 @@ pub fn main() !void {
                 //denseMapPut(&loaded_chunks[collision_chunk_index].block_data, 0, @floatToInt(i16, target_block.coords.x), @floatToInt(i16, target_block.coords.y), @floatToInt(i16, target_block.coords.z));
 
                 // TODO(caleb): Only update mesh that changed.
-
-                // Update chunk mesh
-                mesh_fb_ally.reset();
-                for (0..World.loaded_chunk_capacity) |chunk_index| {
-                    renderer.unloadMesh(chunk_meshes[chunk_index]);
-                    chunk_meshes[chunk_index] = renderer.cullMesh(mesh_fb_ally.allocator(), @intCast(u8, chunk_index), &world, &atlas) catch unreachable; //std.mem.zeroes(rl.Mesh);
-                    rl.UploadMesh(&chunk_meshes[chunk_index], false);
-                }
+                mesher.updateChunkMeshes(&mesh_pool, &chunk_meshes, &world, &atlas);
             } else if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_RIGHT)) { // Place block
                 var d_target_block_coords = rl.Vector3Zero();
                 switch (target_block.face) {
@@ -283,14 +273,7 @@ pub fn main() !void {
                     .far => d_target_block_coords = rl.Vector3{ .x = 0, .y = 0, .z = -1 },
                 }
                 //               denseMapPut(&loaded_chunks[collision_chunk_index].block_data, 1, @floatToInt(i16, target_block.coords.x + d_target_block_coords.x), @floatToInt(i16, target_block.coords.y + d_target_block_coords.y), @floatToInt(i16, target_block.coords.z + d_target_block_coords.z));
-
-                // Update chunk mesh
-                mesh_fb_ally.reset();
-                for (0..World.loaded_chunk_capacity) |chunk_index| {
-                    renderer.unloadMesh(chunk_meshes[chunk_index]);
-                    chunk_meshes[chunk_index] = renderer.cullMesh(mesh_fb_ally.allocator(), chunk_index, &world, &atlas) catch unreachable; //std.mem.zeroes(rl.Mesh);
-                    rl.UploadMesh(&chunk_meshes[chunk_index], false);
-                }
+                mesher.updateChunkMeshes(&mesh_pool, &chunk_meshes, &world, &atlas);
             }
         }
 
@@ -308,8 +291,8 @@ pub fn main() !void {
 
         // Only draw this mesh if it's within the view frustum
         // if (should_draw_chunk) {
-        for (chunk_meshes) |mesh| {
-            rl.DrawMesh(mesh, default_material, rl.MatrixIdentity());
+        for (chunk_meshes) |chunk_mesh| {
+            rl.DrawMesh(chunk_mesh.mesh, default_material, rl.MatrixIdentity());
         }
         // }
 

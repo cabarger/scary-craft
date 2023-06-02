@@ -9,18 +9,16 @@ const BSTExtra = scary_types.BSTExtra;
 const Vector3 = scary_types.Vector3;
 const AutoHashMap = std.AutoHashMap;
 
-const hashString = std.hash_map.hashString;
-
 const Self = @This();
 
-pub const loaded_chunk_capacity = 14;
+pub const loaded_chunk_capacity = 7;
 pub const chunk_cache_capacity = loaded_chunk_capacity * 2;
 
 const WorldSaveHeader = packed struct {
     chunk_count: u32,
 };
 
-const ChunkHandle = packed struct {
+pub const ChunkHandle = packed struct {
     index: u32,
     coords: Vector3(i32),
 };
@@ -37,12 +35,6 @@ pub fn init(ally: std.mem.Allocator) Self {
     result.chunk_cache_st = BSTExtra(ChunkHandle, .{ .preheated_node_count = chunk_cache_capacity, .growable = false }, cstGoLeft, cstFoundTarget).init(ally);
     result.world_chunk_st = BST(ChunkHandle, cstGoLeft, cstFoundTarget).init(ally);
     return result;
-}
-
-pub fn hashChunk(coords: Vector3(i32)) u64 {
-    var chunk_hash_buf: [128]u8 = undefined;
-    const chunk_coords_str = std.fmt.bufPrint(&chunk_hash_buf, "{d}{d}{d}", .{ coords.x, coords.y, coords.z }) catch unreachable;
-    return hashString(chunk_coords_str);
 }
 
 pub fn chunkFromCoords(self: *Self, coords: Vector3(i32)) ?*Chunk {
@@ -149,7 +141,6 @@ pub fn loadChunks(
         .len = 0,
     };
 
-    std.debug.print("------------------------------\n", .{});
     const start_chunk_coords = worldf32ToChunki32(pos);
     load_queue.pushAssumeCapacity(start_chunk_coords); // Push start chunk
     while (loaded_chunk_count < loaded_chunk_capacity) {
@@ -217,13 +208,13 @@ pub fn loadChunks(
     }
 }
 
-fn cstFoundTarget(a: ChunkHandle, b: ChunkHandle) bool {
+pub fn cstFoundTarget(a: ChunkHandle, b: ChunkHandle) bool {
     var result = false;
     result = a.coords.equals(b.coords);
     return result;
 }
 
-fn cstGoLeft(a: ChunkHandle, b: ChunkHandle) bool {
+pub fn cstGoLeft(a: ChunkHandle, b: ChunkHandle) bool {
     var check_left: bool = undefined;
     if (a.coords.x < b.coords.x) { // Check x coords
         check_left = true;

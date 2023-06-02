@@ -2,8 +2,6 @@ const std = @import("std");
 const rl = @import("rl.zig");
 const scary_types = @import("scary_types.zig");
 
-const block_dim = rl.Vector3{ .x = 1, .y = 1, .z = 1 };
-
 const Chunk = @import("Chunk.zig");
 const World = @import("World.zig");
 const Atlas = @import("Atlas.zig");
@@ -13,12 +11,22 @@ const AutoHashMap = std.AutoHashMap;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const FixedBufferAllocator = std.heap.FixedBufferAllocator;
+const MemoryPoolExtra = std.heap.MemoryPoolExtra;
 
 const SmolQ = scary_types.SmolQ;
 const BST = scary_types.BST;
 const Vector3 = scary_types.Vector3;
 
 const hashString = std.hash_map.hashString;
+
+const block_dim = rl.Vector3{ .x = 1, .y = 1, .z = 1 };
+pub const mem_per_chunk = 1024 * 1024 / World.loaded_chunk_capacity;
+
+pub const ChunkMesh = struct {
+    mem: *align(@alignOf(?*MemoryPoolExtra([mem_per_chunk]u8, .{ .alignment = null, .growable = false }))) [mem_per_chunk]u8,
+    coords: Vector3(i32),
+    mesh: rl.Mesh,
+};
 
 inline fn setNormal3f(normals: []f32, normals_offset: *u32, x: f32, y: f32, z: f32) void {
     normals[normals_offset.*] = x;
@@ -71,8 +79,17 @@ inline fn isSolidBlock(dense_map: []u8, x: u8, y: u8, z: u8) bool {
 }
 
 /// Generate chunk sized mesh starting at world origin.
-pub fn cullMesh(ally: Allocator, chunk_index: usize, world: *World, sprite_sheet: *Atlas) !rl.Mesh {
-    var result = std.mem.zeroes(rl.Mesh);
+pub fn cullMesh(
+    mesh_pool: *MemoryPoolExtra([mem_per_chunk]u8, .{ .alignment = null, .growable = false }),
+    chunk_index: usize,
+    world: *World,
+    sprite_sheet: *Atlas,
+) !ChunkMesh {
+    var result = ChunkMesh{
+        .mesh = std.mem.zeroes(rl.Mesh),
+        .mem = try mesh_pool.create(),
+        .coords = world.loaded_chunks[chunk_index].coords,
+    };
     var face_count: c_int = 0;
     {
         var block_y: u8 = 0;
@@ -91,11 +108,14 @@ pub fn cullMesh(ally: Allocator, chunk_index: usize, world: *World, sprite_sheet
         }
     }
 
-    result.triangleCount = face_count * 2;
-    result.vertexCount = result.triangleCount * 3;
-    var normals = try ally.alloc(f32, @intCast(u32, result.vertexCount * 3));
-    var texcoords = try ally.alloc(f32, @intCast(u32, result.vertexCount * 2));
-    var verticies = try ally.alloc(f32, @intCast(u32, result.vertexCount * 3));
+    var fb = FixedBufferAllocator.init(result.mem);
+    var ally = fb.allocator();
+
+    result.mesh.triangleCount = face_count * 2;
+    result.mesh.vertexCount = result.mesh.triangleCount * 3;
+    var normals = try ally.alloc(f32, @intCast(u32, result.mesh.vertexCount * 3));
+    var texcoords = try ally.alloc(f32, @intCast(u32, result.mesh.vertexCount * 2));
+    var verticies = try ally.alloc(f32, @intCast(u32, result.mesh.vertexCount * 3));
     std.debug.print("required bytes: {d}\n", .{normals.len * 3 + texcoords.len * 3 + verticies.len * 3});
     var normals_offset: u32 = 0;
     var texcoords_offset: u32 = 0;
@@ -243,16 +263,61 @@ pub fn cullMesh(ally: Allocator, chunk_index: usize, world: *World, sprite_sheet
         }
     }
 
-    result.normals = @ptrCast([*c]f32, normals);
-    result.texcoords = @ptrCast([*c]f32, texcoords);
-    result.vertices = @ptrCast([*c]f32, verticies);
+    result.mesh.normals = @ptrCast([*c]f32, normals);
+    result.mesh.texcoords = @ptrCast([*c]f32, texcoords);
+    result.mesh.vertices = @ptrCast([*c]f32, verticies);
 
     return result;
 }
 
+/// NOTE(caleb): This function assumes chunk_meshes has already been initialized
+pub fn updateChunkMeshes(
+    mesh_pool: *MemoryPoolExtra([mem_per_chunk]u8, .{ .alignment = null, .growable = false }),
+    chunk_meshes: []ChunkMesh,
+    world: *World,
+    atlas: *Atlas,
+) void {
+    var removed_chunk_count: usize = 0;
+    var removed_chunk_indicies: [World.loaded_chunk_capacity]usize = undefined;
+
+    // Unload meshes that don't exist in loaded_chunks, save the index of
+    // the chunk mesh that was removed so a mesh can be generated in it's place.
+    for (chunk_meshes, 0..) |*chunk_mesh, chunk_mesh_index| {
+        var has_loaded_chunk = false;
+        for (world.loaded_chunks) |loaded_chunk| {
+            if (Vector3(i32).equals(loaded_chunk.coords, chunk_mesh.coords)) {
+                has_loaded_chunk = true;
+                break;
+            }
+        }
+        if (!has_loaded_chunk) {
+            mesh_pool.destroy(chunk_mesh.mem);
+            unloadMesh(chunk_mesh.mesh);
+            removed_chunk_indicies[removed_chunk_count] = chunk_mesh_index;
+            removed_chunk_count += 1;
+        }
+    }
+
+    // Update chunk_meshes with missing chunks from loaded_chunks.
+    for (world.loaded_chunks, 0..) |loaded_chunk, loaded_chunk_index| {
+        var has_mesh_chunk = false;
+        for (chunk_meshes) |chunk_mesh| {
+            if (Vector3(i32).equals(loaded_chunk.coords, chunk_mesh.coords)) {
+                has_mesh_chunk = true;
+                break;
+            }
+        }
+        if (!has_mesh_chunk) {
+            std.debug.assert(removed_chunk_count > 0);
+            chunk_meshes[removed_chunk_indicies[removed_chunk_count - 1]] = cullMesh(mesh_pool, @intCast(u8, loaded_chunk_index), world, atlas) catch unreachable;
+            rl.UploadMesh(&chunk_meshes[removed_chunk_indicies[removed_chunk_count - 1]].mesh, false);
+            removed_chunk_count -= 1;
+        }
+    }
+}
+
 /// Unload mesh from memory (RAM and VRAM)
 pub fn unloadMesh(mesh: rl.Mesh) void {
-
     // Unload rlgl mesh vboId data
     rl.rlUnloadVertexArray(mesh.vaoId);
     if (mesh.vboId != null) {
