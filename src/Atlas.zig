@@ -8,7 +8,7 @@ const Self = @This();
 ally: std.mem.Allocator,
 columns: u16,
 texture: rl.Texture,
-name_to_id: AutoHashMap(u64, u16),
+name_to_id: AutoHashMap(u64, u8),
 
 pub fn init(ally: std.mem.Allocator) Self {
     return Self{
@@ -21,7 +21,7 @@ pub fn init(ally: std.mem.Allocator) Self {
 
 pub fn load(self: *Self, comptime atlas_image_path: [:0]const u8, atlas_config_path: []const u8) !void {
     self.texture = rl.LoadTexture(atlas_image_path.ptr);
-    self.name_to_id = AutoHashMap(u64, u16).init(self.ally);
+    self.name_to_id = AutoHashMap(u64, u8).init(self.ally);
 
     var arena_ally = std.heap.ArenaAllocator.init(self.ally);
     defer arena_ally.deinit();
@@ -41,6 +41,6 @@ pub fn load(self: *Self, comptime atlas_image_path: [:0]const u8, atlas_config_p
     for (tile_data.array.items) |tile| {
         var tile_id = tile.object.get("id") orelse unreachable;
         var tile_type = tile.object.get("type") orelse unreachable;
-        try self.name_to_id.put(std.hash_map.hashString(tile_type.string), @intCast(u16, tile_id.integer));
+        try self.name_to_id.put(std.hash_map.hashString(tile_type.string), @intCast(u8, tile_id.integer));
     }
 }

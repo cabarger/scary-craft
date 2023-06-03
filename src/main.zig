@@ -1,5 +1,6 @@
 const std = @import("std");
 const rl = @import("rl.zig");
+const rgui = @import("rgui.zig");
 const scary_types = @import("scary_types.zig");
 const mesher = @import("mesher.zig");
 const block_caster = @import("block_caster.zig");
@@ -19,6 +20,8 @@ const MemoryPoolExtra = std.heap.MemoryPoolExtra;
 const SmolQ = scary_types.SmolQ;
 const BST = scary_types.BST;
 const Vector3 = scary_types.Vector3;
+
+const hashString = std.hash_map.hashString;
 
 // TODO(caleb):
 // -----------------------------------------------------------------------------------
@@ -129,6 +132,11 @@ pub fn main() !void {
 
     const font = rl.LoadFont("data/FiraCode-Medium.ttf");
 
+    rgui.GuiLoadStyle("raygui/styles/dark/dark.rgs");
+
+    rgui.GuiDisable();
+    // rgui.GuoSetStyle(@enumToInt(rgui.GuiControlProperty.), @enumToInt(rgui.GuiPropertyElement.TEXT), )
+
     var atlas = Atlas.init(arena_ally.allocator());
     try atlas.load("data/atlas.png", "data/atlas_data.json");
 
@@ -162,7 +170,7 @@ pub fn main() !void {
 
     var last_position = camera.position;
 
-    try World.writeDummySave("data/world.sav");
+    try World.writeDummySave("data/world.sav", &atlas);
     var world = World.init(arena_ally.allocator());
     try world.loadSave("data/world.sav");
 
@@ -174,6 +182,12 @@ pub fn main() !void {
         chunk_mesh.* = mesher.cullMesh(&mesh_pool, @intCast(u8, chunk_index), &world, &atlas) catch unreachable;
         rl.UploadMesh(&chunk_mesh.mesh, false);
     }
+
+    var command_buffer: [128]u8 = undefined;
+    var editing_command_buffer = false;
+    var empty_str = try std.fmt.bufPrintZ(&command_buffer, "", .{});
+
+    var held_block_id = atlas.name_to_id.get(hashString("default_grass")) orelse unreachable;
 
     while (!rl.WindowShouldClose()) {
         const screen_dim = rl.Vector2{ .x = @intToFloat(f32, rl.GetScreenWidth()), .y = @intToFloat(f32, rl.GetScreenHeight()) };
@@ -209,6 +223,10 @@ pub fn main() !void {
         }
         if (rl.IsKeyDown(rl.KEY_LEFT_CONTROL)) {
             camera_move.z -= move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * rl.GetFrameTime();
+        }
+        if (rl.IsKeyPressed(rl.KEY_SLASH)) {
+            editing_command_buffer = true; //TODO(caleb): Fix this jankness
+            rgui.GuiEnable();
         }
 
         rl.UpdateCameraPro(&camera, camera_move, rl.Vector3{ .x = rl.GetMouseDelta().x * mouse_sens, .y = rl.GetMouseDelta().y * mouse_sens, .z = 0 }, 0); //rl.GetMouseWheelMove());
@@ -254,13 +272,13 @@ pub fn main() !void {
 
         var target_block: block_caster.BlockHit = undefined;
         if (crosshair_ray_collision.hit and crosshair_ray_collision.distance < crosshair_block_range) {
-            target_block = block_caster.blockHitFromPoint(world.loaded_chunks[collision_chunk_index], crosshair_ray_collision.point);
+            const loaded_chunk_index = world.chunkIndexFromCoords(chunk_meshes[collision_chunk_index].coords) orelse unreachable;
+            target_block = block_caster.blockHitFromPoint(world.loaded_chunks[loaded_chunk_index], crosshair_ray_collision.point);
+            const chunk_rel_pos = World.worldf32ToChunkRel(target_block.coords);
 
             if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)) { // Break block
-                // TODO(caleb): World space block coordnates to chunk relative block coordnates
-                //denseMapPut(&loaded_chunks[collision_chunk_index].block_data, 0, @floatToInt(i16, target_block.coords.x), @floatToInt(i16, target_block.coords.y), @floatToInt(i16, target_block.coords.z));
-
-                // TODO(caleb): Only update mesh that changed.
+                world.loaded_chunks[loaded_chunk_index].put(0, chunk_rel_pos.x, chunk_rel_pos.y, chunk_rel_pos.z);
+                chunk_meshes[collision_chunk_index].needs_update = true;
                 mesher.updateChunkMeshes(&mesh_pool, &chunk_meshes, &world, &atlas);
             } else if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_RIGHT)) { // Place block
                 var d_target_block_coords = rl.Vector3Zero();
@@ -272,7 +290,14 @@ pub fn main() !void {
                     .near => d_target_block_coords = rl.Vector3{ .x = 0, .y = 0, .z = 1 },
                     .far => d_target_block_coords = rl.Vector3{ .x = 0, .y = 0, .z = -1 },
                 }
-                //               denseMapPut(&loaded_chunks[collision_chunk_index].block_data, 1, @floatToInt(i16, target_block.coords.x + d_target_block_coords.x), @floatToInt(i16, target_block.coords.y + d_target_block_coords.y), @floatToInt(i16, target_block.coords.z + d_target_block_coords.z));
+
+                world.loaded_chunks[loaded_chunk_index].put(
+                    held_block_id,
+                    @intCast(u8, @intCast(i8, chunk_rel_pos.x) + @floatToInt(i8, d_target_block_coords.x)),
+                    @intCast(u8, @intCast(i8, chunk_rel_pos.y) + @floatToInt(i8, d_target_block_coords.y)),
+                    @intCast(u8, @intCast(i8, chunk_rel_pos.z) + @floatToInt(i8, d_target_block_coords.z)),
+                );
+                chunk_meshes[collision_chunk_index].needs_update = true;
                 mesher.updateChunkMeshes(&mesh_pool, &chunk_meshes, &world, &atlas);
             }
         }
@@ -290,11 +315,8 @@ pub fn main() !void {
         // }
 
         // Only draw this mesh if it's within the view frustum
-        // if (should_draw_chunk) {
-        for (chunk_meshes) |chunk_mesh| {
+        for (chunk_meshes) |chunk_mesh|
             rl.DrawMesh(chunk_mesh.mesh, default_material, rl.MatrixIdentity());
-        }
-        // }
 
         rl.EndMode3D();
 
@@ -302,6 +324,17 @@ pub fn main() !void {
         rl.DrawLineEx(screen_mid, rl.Vector2Add(screen_mid, rl.Vector2{ .x = crosshair_length_in_pixels, .y = 0 }), crosshair_thickness_in_pixels, rl.WHITE);
         rl.DrawLineEx(screen_mid, rl.Vector2Add(screen_mid, rl.Vector2{ .x = 0, .y = -crosshair_length_in_pixels }), crosshair_thickness_in_pixels, rl.WHITE);
         rl.DrawLineEx(screen_mid, rl.Vector2Add(screen_mid, rl.Vector2{ .x = 0, .y = crosshair_length_in_pixels }), crosshair_thickness_in_pixels, rl.WHITE);
+
+        if (editing_command_buffer) {
+            const tbox_rect = rgui.Rectangle{ .x = 0, .y = screen_dim.y - 25, .width = screen_dim.x / 3, .height = 25 };
+            if (rgui.GuiTextBox(tbox_rect, empty_str, command_buffer.len, editing_command_buffer) == 1) {
+                const bytes_written = std.zig.c_builtins.__builtin_strlen(&command_buffer);
+                held_block_id = atlas.name_to_id.get(hashString(command_buffer[1..bytes_written])) orelse held_block_id;
+                for (0..bytes_written) |byte_index| command_buffer[byte_index] = 0;
+                editing_command_buffer = false;
+                rgui.GuiDisable();
+            }
+        }
 
         if (debug_text_info) {
             var strz_buffer: [256]u8 = undefined;

@@ -19,12 +19,13 @@ const Vector3 = scary_types.Vector3;
 
 const hashString = std.hash_map.hashString;
 
-const block_dim = rl.Vector3{ .x = 1, .y = 1, .z = 1 };
+pub const block_dim = rl.Vector3{ .x = 1, .y = 1, .z = 1 };
 pub const mem_per_chunk = 1024 * 1024 / World.loaded_chunk_capacity;
 
 pub const ChunkMesh = struct {
     mem: *align(@alignOf(?*MemoryPoolExtra([mem_per_chunk]u8, .{ .alignment = null, .growable = false }))) [mem_per_chunk]u8,
     coords: Vector3(i32),
+    needs_update: bool,
     mesh: rl.Mesh,
 };
 
@@ -61,13 +62,13 @@ inline fn shouldDrawFace(world: *World, chunk_index: usize, block_x: u8, block_y
         .z = @divFloor(@intCast(i32, block_z) + face_normal.z, Chunk.dim.z),
     };
     chunk_coords = Vector3(i32).add(world.loaded_chunks[chunk_index].coords, chunk_coords);
-    const chunk_ptr = world.chunkFromCoords(chunk_coords) orelse return false;
+    const border_or_same_chunk_index = world.chunkIndexFromCoords(chunk_coords) orelse return false;
 
     var wrapped_x: Chunk.u_dimx = if (face_normal.x >= 0) @intCast(Chunk.u_dimx, block_x) +% @intCast(Chunk.u_dimx, face_normal.x) else @intCast(Chunk.u_dimx, block_x) -% 1;
     var wrapped_y: Chunk.u_dimy = if (face_normal.y >= 0) @intCast(Chunk.u_dimy, block_y) +% @intCast(Chunk.u_dimy, face_normal.y) else @intCast(Chunk.u_dimy, block_y) -% 1;
     var wrapped_z: Chunk.u_dimz = if (face_normal.z >= 0) @intCast(Chunk.u_dimz, block_z) +% @intCast(Chunk.u_dimz, face_normal.z) else @intCast(Chunk.u_dimz, block_z) -% 1;
 
-    return !isSolidBlock(&chunk_ptr.block_data, wrapped_x, wrapped_y, wrapped_z);
+    return !isSolidBlock(&world.loaded_chunks[border_or_same_chunk_index].block_data, wrapped_x, wrapped_y, wrapped_z);
 }
 
 inline fn isSolidBlock(dense_map: []u8, x: u8, y: u8, z: u8) bool {
@@ -88,6 +89,7 @@ pub fn cullMesh(
     var result = ChunkMesh{
         .mesh = std.mem.zeroes(rl.Mesh),
         .mem = try mesh_pool.create(),
+        .needs_update = false,
         .coords = world.loaded_chunks[chunk_index].coords,
     };
     var face_count: c_int = 0;
@@ -116,27 +118,11 @@ pub fn cullMesh(
     var normals = try ally.alloc(f32, @intCast(u32, result.mesh.vertexCount * 3));
     var texcoords = try ally.alloc(f32, @intCast(u32, result.mesh.vertexCount * 2));
     var verticies = try ally.alloc(f32, @intCast(u32, result.mesh.vertexCount * 3));
-    std.debug.print("required bytes: {d}\n", .{normals.len * 3 + texcoords.len * 3 + verticies.len * 3});
     var normals_offset: u32 = 0;
     var texcoords_offset: u32 = 0;
     var verticies_offset: u32 = 0;
 
-    // TODO(caleb): Texture coords per block.
-    const grass_id = sprite_sheet.name_to_id.get(hashString("default_grass")) orelse unreachable;
-    const grass_tile_row = @divTrunc(grass_id, sprite_sheet.columns);
-    const grass_tile_column = @mod(grass_id, sprite_sheet.columns);
-    const grass_texcoord_start_x = 128 * @intToFloat(f32, grass_tile_column) / @intToFloat(f32, sprite_sheet.texture.width);
-    const grass_texcoord_end_x = grass_texcoord_start_x + 128 / @intToFloat(f32, sprite_sheet.texture.width);
-    const grass_texcoord_start_y = 128 * @intToFloat(f32, grass_tile_row) / @intToFloat(f32, sprite_sheet.texture.height);
-    const grass_texcoord_end_y = grass_texcoord_start_y + 128 / @intToFloat(f32, sprite_sheet.texture.height);
-
-    const dirt_id = sprite_sheet.name_to_id.get(hashString("default_dirt")) orelse unreachable;
-    const dirt_tile_row = @divTrunc(dirt_id, sprite_sheet.columns);
-    const dirt_tile_column = @mod(dirt_id, sprite_sheet.columns);
-    const dirt_texcoord_start_x = 128 * @intToFloat(f32, dirt_tile_column) / @intToFloat(f32, sprite_sheet.texture.width);
-    const dirt_texcoord_end_x = dirt_texcoord_start_x + 128 / @intToFloat(f32, sprite_sheet.texture.width);
-    const dirt_texcoord_start_y = 128 * @intToFloat(f32, dirt_tile_row) / @intToFloat(f32, sprite_sheet.texture.height);
-    const dirt_texcoord_end_y = dirt_texcoord_start_y + 128 / @intToFloat(f32, sprite_sheet.texture.height);
+    // TODO(caleb): Side and bottom textures
     {
         var block_y: u8 = 0;
         while (block_y < Chunk.dim.y) : (block_y += 1) {
@@ -153,20 +139,28 @@ pub fn cullMesh(
                         .z = @intToFloat(f32, block_z) + @intToFloat(f32, world.loaded_chunks[chunk_index].coords.z * Chunk.dim.z),
                     };
 
+                    const id = world.loaded_chunks[chunk_index].fetch(block_x, block_y, block_z) orelse unreachable;
+                    const tile_row = @divTrunc(id, sprite_sheet.columns);
+                    const tile_column = @mod(id, sprite_sheet.columns);
+                    const texcoord_start_x = 128 * @intToFloat(f32, tile_column) / @intToFloat(f32, sprite_sheet.texture.width);
+                    const texcoord_end_x = texcoord_start_x + 128 / @intToFloat(f32, sprite_sheet.texture.width);
+                    const texcoord_start_y = 128 * @intToFloat(f32, tile_row) / @intToFloat(f32, sprite_sheet.texture.height);
+                    const texcoord_end_y = texcoord_start_y + 128 / @intToFloat(f32, sprite_sheet.texture.height);
+
                     // Top Face
                     if (shouldDrawFace(world, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = 0, .y = 1, .z = 0 })) {
                         setFaceNormals(normals, &normals_offset, 0, 1, 0); // Normals pointing up
-                        setTexcoord2f(texcoords, &texcoords_offset, grass_texcoord_start_x, grass_texcoord_end_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y + block_dim.y, block_pos.z + block_dim.z); // Bottom left texture and vertex
-                        setTexcoord2f(texcoords, &texcoords_offset, grass_texcoord_end_x, grass_texcoord_start_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_end_x, texcoord_start_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y + block_dim.y, block_pos.z); // Top right texture and vertex
-                        setTexcoord2f(texcoords, &texcoords_offset, grass_texcoord_start_x, grass_texcoord_start_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_start_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y + block_dim.y, block_pos.z); // Top left texture and vertex.
-                        setTexcoord2f(texcoords, &texcoords_offset, grass_texcoord_start_x, grass_texcoord_end_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y + block_dim.y, block_pos.z + block_dim.z); // Bottom left texture and vertex
-                        setTexcoord2f(texcoords, &texcoords_offset, grass_texcoord_end_x, grass_texcoord_end_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_end_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y + block_dim.y, block_pos.z + block_dim.z); // Bottom right texture and vertex.
-                        setTexcoord2f(texcoords, &texcoords_offset, grass_texcoord_end_x, grass_texcoord_start_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_end_x, texcoord_start_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y + block_dim.y, block_pos.z); // Top right texture and vertex
                     }
 
@@ -174,88 +168,88 @@ pub fn cullMesh(
                     if (shouldDrawFace(world, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = 0, .y = 0, .z = 1 })) {
                         setFaceNormals(normals, &normals_offset, 0, 0, 1); // Normals pointing towards viewer
 
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y, block_pos.z + block_dim.z); // Bottom left texture and vertex
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_end_x, texcoord_start_y);
 
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y + block_dim.y, block_pos.z + block_dim.z); // Top right texture and vertex
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_start_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_start_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y + block_dim.y, block_pos.z + block_dim.z); // Top left texture and vertex.
 
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y, block_pos.z + block_dim.z); // Bottom left texture and vertex
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_end_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_end_x, texcoord_end_y);
 
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y, block_pos.z + block_dim.z); // Bottom right texture and vertex
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_end_x, texcoord_start_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y + block_dim.y, block_pos.z + block_dim.z); // Top right texture and vertex
                     }
 
                     // Back face
                     if (shouldDrawFace(world, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = 0, .y = 0, .z = -1 })) {
                         setFaceNormals(normals, &normals_offset, 0, 0, -1); // Normals pointing away from viewer
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y, block_pos.z); // Bottom left texture and vertex
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_end_x, texcoord_start_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y + block_dim.y, block_pos.z); // Top right texture and vertex
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_start_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_start_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y + block_dim.y, block_pos.z); // Top left texture and vertex.
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y, block_pos.z); // Bottom left texture and vertex
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_end_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_end_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y, block_pos.z); // Bottom right texture and vertex
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_end_x, texcoord_start_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y + block_dim.y, block_pos.z); // Top right texture and vertex
                     }
 
                     // Bottom face
                     if (shouldDrawFace(world, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = 0, .y = -1, .z = 0 })) {
                         setFaceNormals(normals, &normals_offset, 0.0, -1.0, 0.0); // Normals pointing down
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y, block_pos.z); // Bottom left texture and vertex
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_end_x, texcoord_start_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y, block_pos.z + block_dim.z); // Top right texture and vertex
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_start_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_start_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y, block_pos.z + block_dim.z); // Top left texture and vertex.
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y, block_pos.z); // Bottom left texture and vertex
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_end_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_end_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y, block_pos.z); // Bottom right texture and vertex
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_end_x, texcoord_start_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y, block_pos.z + block_dim.z); // Top right texture and vertex
                     }
 
                     // Right face
                     if (shouldDrawFace(world, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = 1, .y = 0, .z = 0 })) {
                         setFaceNormals(normals, &normals_offset, 1.0, 0.0, 0.0); // Normals pointing right
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y, block_pos.z + block_dim.z); // Bottom left of the texture and vertex
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_end_x, texcoord_start_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y + block_dim.y, block_pos.z); // Top right of the texture and vertex
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_start_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_start_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y + block_dim.y, block_pos.z + block_dim.z); // Top left of the texture and vertex
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y, block_pos.z + block_dim.z); // Bottom left of the texture and vertex
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_end_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_end_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y, block_pos.z); // Bottom right of the texture and vertex
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_end_x, texcoord_start_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y + block_dim.y, block_pos.z); // Top right of the texture and vertex
                     }
 
                     // Left Face
                     if (shouldDrawFace(world, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = -1, .y = 0, .z = 0 })) {
                         setFaceNormals(normals, &normals_offset, -1.0, 0.0, 0.0); // Normals Pointing Left
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y, block_pos.z); // Bottom left of the texture and texture
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_end_x, texcoord_start_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y + block_dim.y, block_pos.z + block_dim.z); // Top right of the texture and texture
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_start_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_start_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y + block_dim.y, block_pos.z); // Top left of the texture and texture
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_start_x, dirt_texcoord_end_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y, block_pos.z); // Bottom left of the texture and texture
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_end_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_end_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y, block_pos.z + block_dim.z); // Bottom right of the texture and texture
-                        setTexcoord2f(texcoords, &texcoords_offset, dirt_texcoord_end_x, dirt_texcoord_start_y);
+                        setTexcoord2f(texcoords, &texcoords_offset, texcoord_end_x, texcoord_start_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y + block_dim.y, block_pos.z + block_dim.z); // Top right of the texture and texture
                     }
                 }
@@ -284,13 +278,16 @@ pub fn updateChunkMeshes(
     // the chunk mesh that was removed so a mesh can be generated in it's place.
     for (chunk_meshes, 0..) |*chunk_mesh, chunk_mesh_index| {
         var has_loaded_chunk = false;
+        var needs_update = false;
         for (world.loaded_chunks) |loaded_chunk| {
             if (Vector3(i32).equals(loaded_chunk.coords, chunk_mesh.coords)) {
                 has_loaded_chunk = true;
+                if (chunk_mesh.needs_update)
+                    needs_update = true;
                 break;
             }
         }
-        if (!has_loaded_chunk) {
+        if (!has_loaded_chunk or needs_update) {
             mesh_pool.destroy(chunk_mesh.mem);
             unloadMesh(chunk_mesh.mesh);
             removed_chunk_indicies[removed_chunk_count] = chunk_mesh_index;
@@ -301,13 +298,16 @@ pub fn updateChunkMeshes(
     // Update chunk_meshes with missing chunks from loaded_chunks.
     for (world.loaded_chunks, 0..) |loaded_chunk, loaded_chunk_index| {
         var has_mesh_chunk = false;
+        var needs_update = false;
         for (chunk_meshes) |chunk_mesh| {
             if (Vector3(i32).equals(loaded_chunk.coords, chunk_mesh.coords)) {
                 has_mesh_chunk = true;
+                if (chunk_mesh.needs_update)
+                    needs_update = true;
                 break;
             }
         }
-        if (!has_mesh_chunk) {
+        if (!has_mesh_chunk or needs_update) {
             std.debug.assert(removed_chunk_count > 0);
             chunk_meshes[removed_chunk_indicies[removed_chunk_count - 1]] = cullMesh(mesh_pool, @intCast(u8, loaded_chunk_index), world, atlas) catch unreachable;
             rl.UploadMesh(&chunk_meshes[removed_chunk_indicies[removed_chunk_count - 1]].mesh, false);

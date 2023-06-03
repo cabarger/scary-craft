@@ -1,5 +1,6 @@
 const std = @import("std");
 const rl = @import("rl.zig");
+const mesher = @import("mesher.zig");
 const Chunk = @import("Chunk.zig");
 const Plane = @import("math/Plane.zig");
 const Frustum = @import("math/Frustum.zig");
@@ -17,8 +18,8 @@ pub fn blockHitFromPoint(chunk: *Chunk, p: rl.Vector3) BlockHit {
     const block_x = @floatToInt(u8, p.x + rl.EPSILON);
     const block_y = @floatToInt(u8, p.y + rl.EPSILON);
     const block_z = @floatToInt(u8, p.z + rl.EPSILON);
-    const val = chunk.fetch(block_x, block_y, block_z);
-    if (val == 1) { // Left, bottom, or back face
+    const val = chunk.fetch(block_x, block_y, block_z) orelse 0;
+    if (val != 0) { // Left, bottom, or back face
         var plane: Plane = undefined;
         var point_on_face: rl.Vector3 = undefined;
         var face_normal: rl.Vector3 = undefined;
@@ -50,7 +51,7 @@ pub fn blockHitFromPoint(chunk: *Chunk, p: rl.Vector3) BlockHit {
                 };
                 if (std.math.approxEqAbs(f32, plane.distanceToPoint(p), 0, rl.EPSILON)) {
                     result.face = Frustum.PlaneIndex.far;
-                } else unreachable; // NOTE(caleb): This was reacached after flying far away and looking at a block.
+                } else unreachable;
             }
         }
         result.coords = rl.Vector3{ .x = @intToFloat(f32, block_x), .y = @intToFloat(f32, block_y), .z = @intToFloat(f32, block_z) };

@@ -20,16 +20,20 @@ pub fn build(b: *std.Build) void {
         .name = "scary-craft",
         // In this case the main source file is merely a path, however, in more
         // complicated build scripts, this could be a generated file.
-        .root_source_file = .{ .path = "src/main.zig" },
+        .root_source_file = .{ .path = srcdir ++ "/src/main.zig" },
         .target = target,
         .optimize = optimize,
     });
-    const raylib = rl.addRaylib(b, exe.target, exe.optimize);
-    raylib.installHeader("raylib/src/raylib.h", "raylib.h");
-    raylib.installHeader("raylib/src/raymath.h", "raymath.h");
-    raylib.installHeader("raylib/src/rcamera.h", "rcamera.h");
-    raylib.installHeader("raylib/src/rlgl.h", "rlgl.h");
-    exe.addIncludePath("zig-out/include");
+
+    var raylib = rl.addRaylib(b, exe.target, exe.optimize);
+    exe.installHeader(srcdir ++ "/raylib/src/raylib.h", "raylib.h");
+    exe.installHeader(srcdir ++ "/raylib/src/raymath.h", "raymath.h");
+    exe.installHeader(srcdir ++ "/raylib/src/rcamera.h", "rcamera.h");
+    exe.installHeader(srcdir ++ "/raylib/src/rlgl.h", "rlgl.h");
+
+    exe.installHeader(srcdir ++ "/raygui/src/raygui.h", "raygui.h");
+
+    exe.addIncludePath(srcdir ++ "/zig-out/include");
     exe.linkLibC();
     exe.linkLibrary(raylib);
 
@@ -64,7 +68,7 @@ pub fn build(b: *std.Build) void {
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
     const unit_tests = b.addTest(.{
-        .root_source_file = .{ .path = "src/main.zig" },
+        .root_source_file = .{ .path = srcdir ++ "/src/main.zig" },
         .target = target,
         .optimize = optimize,
     });
@@ -77,3 +81,9 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
 }
+
+const srcdir = struct {
+    fn getSrcDir() []const u8 {
+        return std.fs.path.dirname(@src().file).?;
+    }
+}.getSrcDir();

@@ -22,8 +22,9 @@ pub inline fn put(self: *Self, val: u8, x: u8, y: u8, z: u8) void {
 }
 
 /// Return block id at chunk relative coords (x, y, z)
-pub inline fn fetch(self: *const Self, x: u8, y: u8, z: u8) u8 {
-    var result: u8 = undefined;
-    result = self.block_data[@intCast(u16, dim.x * dim.y) * z + y * @intCast(u16, dim.x) + x];
+pub fn fetch(self: *const Self, x: u8, y: u8, z: u8) ?u8 {
+    var result: ?u8 = null;
+    if ((x < dim.x) and (y < dim.y) and (z < dim.z))
+        result = self.block_data[@intCast(u16, dim.x * dim.y) * z + y * @intCast(u16, dim.x) + x];
     return result;
 }

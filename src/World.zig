@@ -1,6 +1,7 @@
 const std = @import("std");
 const rl = @import("rl.zig");
 const scary_types = @import("scary_types.zig");
+const Atlas = @import("Atlas.zig");
 const Chunk = @import("Chunk.zig");
 
 const SmolQ = scary_types.SmolQ;
@@ -9,10 +10,12 @@ const BSTExtra = scary_types.BSTExtra;
 const Vector3 = scary_types.Vector3;
 const AutoHashMap = std.AutoHashMap;
 
+const hashString = std.hash_map.hashString;
+
 const Self = @This();
 
 pub const loaded_chunk_capacity = 7;
-pub const chunk_cache_capacity = loaded_chunk_capacity * 2;
+pub const chunk_cache_capacity = loaded_chunk_capacity * 3;
 
 const WorldSaveHeader = packed struct {
     chunk_count: u32,
@@ -37,17 +40,17 @@ pub fn init(ally: std.mem.Allocator) Self {
     return result;
 }
 
-pub fn chunkFromCoords(self: *Self, coords: Vector3(i32)) ?*Chunk {
-    for (self.loaded_chunks) |chunk| {
+pub fn chunkIndexFromCoords(self: *Self, coords: Vector3(i32)) ?usize {
+    for (self.loaded_chunks, 0..) |chunk, chunk_index| {
         if (chunk.coords.equals(coords))
-            return chunk;
+            return chunk_index;
     }
     return null;
 }
 
 /// Creates a dummy world save.
 /// NOTE(caleb): This function will clobber the world save at 'world_save_path'.
-pub fn writeDummySave(world_save_path: []const u8) !void {
+pub fn writeDummySave(world_save_path: []const u8, atlas: *Atlas) !void {
     const world_save_file = try std.fs.cwd().createFile(world_save_path, .{ .truncate = true });
     defer world_save_file.close();
 
@@ -60,9 +63,8 @@ pub fn writeDummySave(world_save_path: []const u8) !void {
     var block_z: u8 = 0;
     while (block_z < Chunk.dim.z) : (block_z += 1) {
         var block_x: u8 = 0;
-        while (block_x < Chunk.dim.x) : (block_x += 1) {
-            test_chunk.put(1, block_x, 0, block_z);
-        }
+        while (block_x < Chunk.dim.x) : (block_x += 1)
+            test_chunk.put(atlas.name_to_id.get(hashString("default_grass")) orelse unreachable, block_x, 0, block_z);
     }
 
     const world_save_writer = world_save_file.writer();
@@ -82,8 +84,16 @@ pub fn loadSave(world: *Self, world_save_path: []const u8) !void {
     }
 }
 
+pub inline fn worldf32ToChunkRel(pos: rl.Vector3) Vector3(u8) {
+    var result: Vector3(u8) = undefined;
+    result.x = @intCast(u8, @floatToInt(u16, pos.x) % Chunk.dim.x);
+    result.y = @intCast(u8, @floatToInt(u16, pos.y) % Chunk.dim.y);
+    result.z = @intCast(u8, @floatToInt(u16, pos.z) % Chunk.dim.z);
+    return result;
+}
+
 /// Given a Vector(i32) in world space, return the eqv. chunk space coords.
-inline fn worldi32ToChunki32(pos: Vector3(i32)) Vector3(i32) {
+pub inline fn worldi32ToChunki32(pos: Vector3(i32)) Vector3(i32) {
     var result: Vector3(i32) = undefined;
     result.x = @divFloor(pos.x, Chunk.dim.x);
     result.y = @divFloor(pos.y, Chunk.dim.y);
@@ -92,7 +102,7 @@ inline fn worldi32ToChunki32(pos: Vector3(i32)) Vector3(i32) {
 }
 
 /// Given a vector of floats in world space, return the eqv. chunk space coords.
-inline fn worldf32ToChunki32(pos: rl.Vector3) Vector3(i32) {
+pub inline fn worldf32ToChunki32(pos: rl.Vector3) Vector3(i32) {
     var result: Vector3(i32) = undefined;
     result.x = @floatToInt(i32, @divFloor(pos.x, @intToFloat(f32, Chunk.dim.x)));
     result.y = @floatToInt(i32, @divFloor(pos.y, @intToFloat(f32, Chunk.dim.y)));
