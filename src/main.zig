@@ -126,7 +126,7 @@ pub fn main() !void {
     rl.DisableCursor();
 
     var page_ally = std.heap.page_allocator;
-    var back_buffer = try page_ally.alloc(u8, 1024 * 1024 * 2); // 2mb
+    var back_buffer = try page_ally.alloc(u8, 1024 * 1024 * 5); // 5mb
     var fb_ally = std.heap.FixedBufferAllocator.init(back_buffer);
     var arena_ally = std.heap.ArenaAllocator.init(fb_ally.allocator());
 

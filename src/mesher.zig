@@ -20,12 +20,12 @@ const Vector3 = scary_types.Vector3;
 const hashString = std.hash_map.hashString;
 
 pub const block_dim = rl.Vector3{ .x = 1, .y = 1, .z = 1 };
-pub const mem_per_chunk = 1024 * 1024 / World.loaded_chunk_capacity;
+pub const mem_per_chunk = 150 * 1024; //150 kb per chunk /// World.loaded_chunk_capacity;
 
 pub const ChunkMesh = struct {
     mem: *align(@alignOf(?*MemoryPoolExtra([mem_per_chunk]u8, .{ .alignment = null, .growable = false }))) [mem_per_chunk]u8,
     coords: Vector3(i32),
-    needs_update: bool,
+    needs_update: bool, // NOTE(caleb): Possibly make this a chunk_rel value?
     mesh: rl.Mesh,
 };
 
@@ -265,12 +265,14 @@ pub fn cullMesh(
 }
 
 /// NOTE(caleb): This function assumes chunk_meshes has already been initialized
+/// TODO(caleb): Make this function smarter.... i.e. if a block is placed solely within a chunk don't update it's neighbors
 pub fn updateChunkMeshes(
     mesh_pool: *MemoryPoolExtra([mem_per_chunk]u8, .{ .alignment = null, .growable = false }),
     chunk_meshes: []ChunkMesh,
     world: *World,
     atlas: *Atlas,
 ) void {
+    std.debug.print("-----------------------------\n", .{});
     var removed_chunk_count: usize = 0;
     var removed_chunk_indicies: [World.loaded_chunk_capacity]usize = undefined;
 
@@ -278,16 +280,14 @@ pub fn updateChunkMeshes(
     // the chunk mesh that was removed so a mesh can be generated in it's place.
     for (chunk_meshes, 0..) |*chunk_mesh, chunk_mesh_index| {
         var has_loaded_chunk = false;
-        var needs_update = false;
         for (world.loaded_chunks) |loaded_chunk| {
             if (Vector3(i32).equals(loaded_chunk.coords, chunk_mesh.coords)) {
                 has_loaded_chunk = true;
-                if (chunk_mesh.needs_update)
-                    needs_update = true;
                 break;
             }
         }
-        if (!has_loaded_chunk or needs_update) {
+
+        if (!has_loaded_chunk or chunk_mesh.needs_update) {
             mesh_pool.destroy(chunk_mesh.mem);
             unloadMesh(chunk_mesh.mesh);
             removed_chunk_indicies[removed_chunk_count] = chunk_mesh_index;
@@ -298,20 +298,55 @@ pub fn updateChunkMeshes(
     // Update chunk_meshes with missing chunks from loaded_chunks.
     for (world.loaded_chunks, 0..) |loaded_chunk, loaded_chunk_index| {
         var has_mesh_chunk = false;
-        var needs_update = false;
-        for (chunk_meshes) |chunk_mesh| {
+        outer: for (chunk_meshes, 0..) |chunk_mesh, chunk_mesh_index| {
+            for (removed_chunk_indicies[0..removed_chunk_count]) |removed_index| // Ignore free chunks
+                if (removed_index == chunk_mesh_index)
+                    continue :outer;
+
             if (Vector3(i32).equals(loaded_chunk.coords, chunk_mesh.coords)) {
                 has_mesh_chunk = true;
-                if (chunk_mesh.needs_update)
-                    needs_update = true;
                 break;
             }
         }
-        if (!has_mesh_chunk or needs_update) {
+        if (!has_mesh_chunk) {
             std.debug.assert(removed_chunk_count > 0);
-            chunk_meshes[removed_chunk_indicies[removed_chunk_count - 1]] = cullMesh(mesh_pool, @intCast(u8, loaded_chunk_index), world, atlas) catch unreachable;
-            rl.UploadMesh(&chunk_meshes[removed_chunk_indicies[removed_chunk_count - 1]].mesh, false);
+            const free_mesh_index = removed_chunk_indicies[removed_chunk_count - 1];
+            chunk_meshes[free_mesh_index] = cullMesh(mesh_pool, @intCast(u8, loaded_chunk_index), world, atlas) catch unreachable;
+            rl.UploadMesh(&chunk_meshes[free_mesh_index].mesh, false);
+            chunk_meshes[free_mesh_index].needs_update = false;
+
+            std.debug.print("{?}\n", .{chunk_meshes[free_mesh_index].coords});
+
+            // Is this chunk a neighboring chunk?
+            outer: for (chunk_meshes, 0..) |*chunk_mesh, chunk_mesh_index| {
+                for (removed_chunk_indicies[0..removed_chunk_count]) |removed_index| // Ignore free chunks
+                    if (removed_index == chunk_mesh_index)
+                        continue :outer;
+
+                for (World.d_chunk_coordses) |d_chunk_coords| {
+                    const neighbor_coords = Vector3(i32).add(d_chunk_coords, chunk_meshes[free_mesh_index].coords);
+                    if (Vector3(i32).equals(neighbor_coords, chunk_mesh.coords)) {
+                        chunk_mesh.needs_update = true;
+                    }
+                }
+            }
+
             removed_chunk_count -= 1;
+        }
+    }
+    std.debug.assert(removed_chunk_count == 0);
+
+    // Update loaded border chunks of chunks which were just loaded
+    for (chunk_meshes) |*chunk_mesh| {
+        if (chunk_mesh.needs_update) {
+            mesh_pool.destroy(chunk_mesh.mem);
+            unloadMesh(chunk_mesh.mesh);
+            const loaded_chunk_index = world.chunkIndexFromCoords(chunk_mesh.coords) orelse unreachable;
+            chunk_mesh.* = cullMesh(mesh_pool, @intCast(u8, loaded_chunk_index), world, atlas) catch unreachable;
+            std.debug.print("{?}\n", .{chunk_mesh.coords});
+
+            rl.UploadMesh(&chunk_mesh.mesh, false);
+            chunk_mesh.needs_update = false;
         }
     }
 }

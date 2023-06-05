@@ -14,7 +14,7 @@ pub const BlockHit = struct {
     face: Frustum.PlaneIndex,
 };
 
-/// Just breathe
+/// Just breathe it's ok
 inline fn hackyWorldf32ToChunkRel(chunk_coords: Vector3(i32), pos: rl.Vector3) Vector3(u8) {
     const max_block_x = (chunk_coords.x + 1) * Chunk.dim.x - 1; // NOTE(caleb): Inclusive
     const max_block_y = (chunk_coords.y + 1) * Chunk.dim.y - 1;
