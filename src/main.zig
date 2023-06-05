@@ -257,15 +257,16 @@ pub fn main() !void {
 
         last_position = camera.position;
 
+        var collision_chunk_index: usize = undefined;
         const crosshair_ray = rl.Ray{ .position = camera.position, .direction = rl.GetCameraForward(&camera) };
         var crosshair_ray_collision: rl.RayCollision = undefined;
         crosshair_ray_collision.hit = false;
-        var collision_chunk_index: usize = undefined;
-        for (0..World.loaded_chunk_capacity) |chunk_index| {
-            crosshair_ray_collision = rl.GetRayCollisionMesh(crosshair_ray, chunk_meshes[chunk_index].mesh, rl.MatrixIdentity());
-            if (crosshair_ray_collision.hit) {
-                collision_chunk_index = chunk_index;
-                break;
+        crosshair_ray_collision.distance = crosshair_block_range + 1;
+        for (chunk_meshes, 0..) |chunk_mesh, chunk_mesh_index| {
+            const this_chunk_collision = rl.GetRayCollisionMesh(crosshair_ray, chunk_mesh.mesh, rl.MatrixIdentity());
+            if (this_chunk_collision.hit and this_chunk_collision.distance < crosshair_ray_collision.distance) {
+                crosshair_ray_collision = this_chunk_collision;
+                collision_chunk_index = chunk_mesh_index; // TODO(caleb): collision_mesh_index?
             }
         }
         const look_direction = lookDirection(crosshair_ray.direction);
@@ -274,10 +275,10 @@ pub fn main() !void {
         if (crosshair_ray_collision.hit and crosshair_ray_collision.distance < crosshair_block_range) {
             const loaded_chunk_index = world.chunkIndexFromCoords(chunk_meshes[collision_chunk_index].coords) orelse unreachable;
             target_block = block_caster.blockHitFromPoint(world.loaded_chunks[loaded_chunk_index], crosshair_ray_collision.point);
-            const chunk_rel_pos = World.worldf32ToChunkRel(target_block.coords);
+            // const chunk_rel_pos = World.worldf32ToChunkRel(target_block.coords);
 
             if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)) { // Break block
-                world.loaded_chunks[loaded_chunk_index].put(0, chunk_rel_pos.x, chunk_rel_pos.y, chunk_rel_pos.z);
+                world.loaded_chunks[loaded_chunk_index].put(0, target_block.coords.x, target_block.coords.y, target_block.coords.z);
                 chunk_meshes[collision_chunk_index].needs_update = true;
                 mesher.updateChunkMeshes(&mesh_pool, &chunk_meshes, &world, &atlas);
             } else if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_RIGHT)) { // Place block
@@ -291,13 +292,29 @@ pub fn main() !void {
                     .far => d_target_block_coords = rl.Vector3{ .x = 0, .y = 0, .z = -1 },
                 }
 
-                world.loaded_chunks[loaded_chunk_index].put(
+                var chunk_coords = Vector3(i32){
+                    .x = @divFloor(@intCast(i32, target_block.coords.x) + @floatToInt(i32, d_target_block_coords.x), Chunk.dim.x),
+                    .y = @divFloor(@intCast(i32, target_block.coords.y) + @floatToInt(i32, d_target_block_coords.y), Chunk.dim.y),
+                    .z = @divFloor(@intCast(i32, target_block.coords.z) + @floatToInt(i32, d_target_block_coords.z), Chunk.dim.z),
+                };
+                chunk_coords = Vector3(i32).add(world.loaded_chunks[loaded_chunk_index].coords, chunk_coords);
+                const border_or_same_chunk_index = world.chunkIndexFromCoords(chunk_coords) orelse unreachable; // NOTE(caleb): This chunk hasn't been loaded but should be if it's a border chunk.
+
+                const wrapped_x: Chunk.u_dimx = if (d_target_block_coords.x >= 0) @intCast(Chunk.u_dimx, target_block.coords.x) +% @floatToInt(Chunk.u_dimx, d_target_block_coords.x) else @intCast(Chunk.u_dimx, target_block.coords.x) -% 1;
+                const wrapped_y: Chunk.u_dimy = if (d_target_block_coords.y >= 0) @intCast(Chunk.u_dimy, target_block.coords.y) +% @floatToInt(Chunk.u_dimy, d_target_block_coords.y) else @intCast(Chunk.u_dimy, target_block.coords.y) -% 1;
+                const wrapped_z: Chunk.u_dimz = if (d_target_block_coords.z >= 0) @intCast(Chunk.u_dimz, target_block.coords.z) +% @floatToInt(Chunk.u_dimz, d_target_block_coords.z) else @intCast(Chunk.u_dimz, target_block.coords.z) -% 1;
+
+                world.loaded_chunks[border_or_same_chunk_index].put(
                     held_block_id,
-                    @intCast(u8, @intCast(i8, chunk_rel_pos.x) + @floatToInt(i8, d_target_block_coords.x)),
-                    @intCast(u8, @intCast(i8, chunk_rel_pos.y) + @floatToInt(i8, d_target_block_coords.y)),
-                    @intCast(u8, @intCast(i8, chunk_rel_pos.z) + @floatToInt(i8, d_target_block_coords.z)),
+                    @intCast(u8, wrapped_x),
+                    @intCast(u8, wrapped_y),
+                    @intCast(u8, wrapped_z),
                 );
-                chunk_meshes[collision_chunk_index].needs_update = true;
+
+                for (&chunk_meshes) |*chunk_mesh| {
+                    if (Vector3(i32).equals(chunk_mesh.coords, chunk_coords))
+                        chunk_mesh.needs_update = true;
+                }
                 mesher.updateChunkMeshes(&mesh_pool, &chunk_meshes, &world, &atlas);
             }
         }

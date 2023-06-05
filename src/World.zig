@@ -86,9 +86,9 @@ pub fn loadSave(world: *Self, world_save_path: []const u8) !void {
 
 pub inline fn worldf32ToChunkRel(pos: rl.Vector3) Vector3(u8) {
     var result: Vector3(u8) = undefined;
-    result.x = @intCast(u8, @floatToInt(u16, pos.x) % Chunk.dim.x);
-    result.y = @intCast(u8, @floatToInt(u16, pos.y) % Chunk.dim.y);
-    result.z = @intCast(u8, @floatToInt(u16, pos.z) % Chunk.dim.z);
+    result.x = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.x)), @intCast(i32, Chunk.dim.x)));
+    result.y = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.y)), @intCast(i32, Chunk.dim.y)));
+    result.z = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.z)), @intCast(i32, Chunk.dim.z)));
     return result;
 }
 
