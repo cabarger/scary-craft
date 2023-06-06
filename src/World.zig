@@ -84,11 +84,33 @@ pub fn loadSave(world: *Self, world_save_path: []const u8) !void {
     }
 }
 
+// TODO(caleb): Convention:
+// world - block position in world space
+// chunk - chunk coords
+// rel - chunk relative block coords
+
+pub inline fn worldi32ToRel(pos: Vector3(i32)) Vector3(u8) {
+    var result: Vector3(u8) = undefined;
+    result.x = @intCast(u8, @mod(pos.x, @intCast(i32, Chunk.dim.x)));
+    result.y = @intCast(u8, @mod(pos.y, @intCast(i32, Chunk.dim.y)));
+    result.z = @intCast(u8, @mod(pos.z, @intCast(i32, Chunk.dim.z)));
+    return result;
+}
+
 pub inline fn worldf32ToChunkRel(pos: rl.Vector3) Vector3(u8) {
     var result: Vector3(u8) = undefined;
     result.x = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.x)), @intCast(i32, Chunk.dim.x)));
     result.y = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.y)), @intCast(i32, Chunk.dim.y)));
     result.z = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.z)), @intCast(i32, Chunk.dim.z)));
+    return result;
+}
+
+/// Takes a relative chunk position, chunk coords. Returns the block position in world space.
+pub inline fn relToWorldi32(pos: Vector3(u8), chunk_coords: Vector3(i32)) Vector3(i32) {
+    var result: Vector3(i32) = undefined;
+    result.x = chunk_coords.x * Chunk.dim.x + pos.x;
+    result.y = chunk_coords.y * Chunk.dim.y + pos.y;
+    result.z = chunk_coords.z * Chunk.dim.z + pos.z;
     return result;
 }
 

@@ -252,7 +252,7 @@ pub fn main() !void {
         };
         if (!last_chunk.equals(player_chunk)) {
             try world.loadChunks(camera.position);
-            mesher.updateChunkMeshes(&mesh_pool, &chunk_meshes, &world, &atlas);
+            mesher.updateChunkMeshesSpatially(&mesh_pool, &chunk_meshes, &world, &atlas);
         }
 
         last_position = camera.position;
@@ -279,8 +279,8 @@ pub fn main() !void {
 
             if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)) { // Break block
                 world.loaded_chunks[loaded_chunk_index].put(0, target_block.coords.x, target_block.coords.y, target_block.coords.z);
-                chunk_meshes[collision_chunk_index].needs_update = true;
-                mesher.updateChunkMeshes(&mesh_pool, &chunk_meshes, &world, &atlas);
+                chunk_meshes[collision_chunk_index].updated_block_pos = target_block.coords;
+                mesher.updateChunkMeshes(&mesh_pool, &chunk_meshes, collision_chunk_index, &world, &atlas);
             } else if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_RIGHT)) { // Place block
                 var d_target_block_coords = rl.Vector3Zero();
                 switch (target_block.face) {
@@ -311,11 +311,14 @@ pub fn main() !void {
                     @intCast(u8, wrapped_z),
                 );
 
-                for (&chunk_meshes) |*chunk_mesh| {
-                    if (Vector3(i32).equals(chunk_mesh.coords, chunk_coords))
-                        chunk_mesh.needs_update = true;
+                var mesh_index: usize = 0;
+                for (chunk_meshes) |mesh| {
+                    if (mesh.coords.equals(world.loaded_chunks[border_or_same_chunk_index].coords)) break;
+                    mesh_index += 1;
                 }
-                mesher.updateChunkMeshes(&mesh_pool, &chunk_meshes, &world, &atlas);
+
+                chunk_meshes[mesh_index].updated_block_pos = Vector3(u8){ .x = @intCast(u8, wrapped_x), .y = @intCast(u8, wrapped_y), .z = @intCast(u8, wrapped_z) };
+                mesher.updateChunkMeshes(&mesh_pool, &chunk_meshes, mesh_index, &world, &atlas);
             }
         }
 
