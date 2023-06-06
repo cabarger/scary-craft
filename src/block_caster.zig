@@ -87,16 +87,21 @@ pub fn blockHitFromPoint(chunk: *Chunk, p: rl.Vector3) BlockHit {
         }
         result.coords = chunk_rel_pos;
     } else {
-        if (std.math.approxEqRel(f32, @round(p.x), p.x, rl.EPSILON)) { // Right face
+        if (std.math.approxEqAbs(f32, @round(p.x), p.x, rl.EPSILON)) { // Right face
             result.coords = Vector3(u8){ .x = chunk_rel_pos.x - 1, .y = chunk_rel_pos.y, .z = chunk_rel_pos.z };
             result.face = Frustum.PlaneIndex.right;
-        } else if (std.math.approxEqRel(f32, @round(p.y), p.y, rl.EPSILON)) { // Top face
+        } else if (std.math.approxEqAbs(f32, @round(p.y), p.y, rl.EPSILON)) { // Top face
             result.coords = Vector3(u8){ .x = chunk_rel_pos.x, .y = chunk_rel_pos.y - 1, .z = chunk_rel_pos.z };
             result.face = Frustum.PlaneIndex.top;
-        } else if (std.math.approxEqRel(f32, @round(p.z), p.z, rl.EPSILON)) { // Front face
+        } else if (std.math.approxEqAbs(f32, @round(p.z), p.z, rl.EPSILON)) { // Front face
             result.coords = Vector3(u8){ .x = chunk_rel_pos.x, .y = chunk_rel_pos.y, .z = chunk_rel_pos.z - 1 };
             result.face = Frustum.PlaneIndex.near;
-        } else unreachable;
+        } else {
+            std.debug.print("Front face: {d}, {d}\n", .{ @round(p.z), p.z });
+            std.debug.print("Top face: {d}, {d}\n", .{ @round(p.y), p.y });
+            std.debug.print("Right face: {d}, {d}\n", .{ @round(p.x), p.x });
+            unreachable;
+        }
     }
     return result;
 }
