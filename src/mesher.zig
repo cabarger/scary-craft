@@ -264,6 +264,7 @@ pub fn cullMesh(
     return result;
 }
 
+/// NOTE(caleb): Updates chunk meshses based on block updates.
 pub fn updateChunkMeshes(
     mesh_pool: *MemoryPoolExtra([mem_per_chunk]u8, .{ .alignment = null, .growable = false }),
     chunk_meshes: []ChunkMesh,
@@ -303,6 +304,7 @@ pub fn updateChunkMeshes(
     rl.UploadMesh(&chunk_meshes[mesh_index].mesh, false);
 }
 
+/// NOTE(caleb): Syncs meshes with loaded chunks
 pub fn updateChunkMeshesSpatially(
     mesh_pool: *MemoryPoolExtra([mem_per_chunk]u8, .{ .alignment = null, .growable = false }),
     chunk_meshes: []ChunkMesh,

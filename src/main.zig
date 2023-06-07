@@ -162,7 +162,7 @@ pub fn main() !void {
     var debug_text_info = false;
 
     var camera: rl.Camera = undefined;
-    camera.position = rl.Vector3{ .x = 0.0, .y = 10.0, .z = 10.0 };
+    camera.position = rl.Vector3{ .x = 8.0, .y = 10.0, .z = 10.0 };
     camera.target = rl.Vector3{ .x = 0.0, .y = 0.0, .z = -1.0 };
     camera.up = rl.Vector3{ .x = 0.0, .y = 1.0, .z = 0.0 };
     camera.fovy = fovy;
@@ -170,7 +170,7 @@ pub fn main() !void {
 
     var last_position = camera.position;
 
-    try World.writeDummySave("data/world.sav", &atlas);
+    // try World.writeDummySave("data/world.sav", &atlas);
     var world = World.init(arena_ally.allocator());
     try world.loadSave("data/world.sav");
 
@@ -384,7 +384,6 @@ pub fn main() !void {
                 rl.DrawTextEx(font, @ptrCast([*c]const u8, no_target_block_strz), rl.Vector2{ .x = 0, .y = y_offset }, font_size, font_spacing, rl.WHITE);
                 y_offset += rl.MeasureTextEx(font, @ptrCast([*c]const u8, no_target_block_strz), font_size, font_spacing).y;
             }
-
             const look_direction_strz = try std.fmt.bufPrintZ(&strz_buffer, "Look direction: {s}", .{@tagName(look_direction)});
             rl.DrawTextEx(font, @ptrCast([*c]const u8, look_direction_strz), rl.Vector2{ .x = 0, .y = y_offset }, font_size, font_spacing, rl.WHITE);
             // y_offset += rl.MeasureTextEx(font, @ptrCast([*c]const u8, look_direction_strz), font_size, font_spacing);
@@ -392,6 +391,27 @@ pub fn main() !void {
         }
 
         rl.EndDrawing();
+    }
+
+    std.debug.print("Saving world...\n", .{});
+    const world_save_file = try std.fs.cwd().openFile("data/world.sav", .{ .mode = std.fs.File.OpenMode.read_write });
+    defer world_save_file.close();
+
+    const world_save_reader = world_save_file.reader(); // Read header
+    const world_save_writer = world_save_file.writer(); // Update header
+
+    for (world.chunk_cache[0..world.chunk_cache_st.count]) |chunk| {
+        try world_save_file.seekTo(0);
+        var save_header = world_save_reader.readStruct(World.WorldSaveHeader) catch unreachable;
+        const world_chunk_handle = world.world_chunk_st.search(.{ .index = undefined, .coords = chunk.coords }) orelse ablk: {
+            try world_save_file.seekTo(0);
+            save_header.chunk_count += 1;
+            try world_save_writer.writeStruct(save_header);
+            break :ablk World.ChunkHandle{ .index = save_header.chunk_count, .coords = chunk.coords };
+        };
+        try world_save_reader.skipBytes((@sizeOf(World.ChunkHandle) + @intCast(u32, Chunk.dim.x) * @intCast(u32, Chunk.dim.y) * @intCast(i32, Chunk.dim.z)) * (world_chunk_handle.index - 1), .{});
+        try world_save_writer.writeStruct(World.ChunkHandle{ .index = world_chunk_handle.index, .coords = world_chunk_handle.coords });
+        try world_save_writer.writeAll(&chunk.block_data);
     }
 
     rl.CloseWindow();

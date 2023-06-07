@@ -22,12 +22,24 @@
          "type":"bones_top"
         }, 
         {
+         "id":64,
+         "type":"default_cobble"
+        }, 
+        {
          "id":78,
          "type":"default_dirt"
         }, 
         {
+         "id":90,
+         "type":"default_glass"
+        }, 
+        {
          "id":92,
          "type":"default_grass"
+        }, 
+        {
+         "id":130,
+         "type":"default_pine_wood"
         }, 
         {
          "id":143,
