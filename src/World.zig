@@ -48,6 +48,27 @@ pub fn chunkIndexFromCoords(self: *Self, coords: Vector3(i32)) ?usize {
     return null;
 }
 
+pub fn writeCachedChunksToDisk(self: *Self, save_path: []const u8) !void {
+    const world_save_file = try std.fs.cwd().openFile(save_path, .{ .mode = std.fs.File.OpenMode.read_write });
+    defer world_save_file.close();
+
+    const world_save_reader = world_save_file.reader(); // Read header
+    const world_save_writer = world_save_file.writer(); // Update header
+    for (self.chunk_cache[0..self.chunk_cache_st.count]) |chunk| {
+        try world_save_file.seekTo(0);
+        var save_header = world_save_reader.readStruct(WorldSaveHeader) catch unreachable;
+        const world_chunk_handle = self.world_chunk_st.search(.{ .index = undefined, .coords = chunk.coords }) orelse ablk: {
+            try world_save_file.seekTo(0);
+            save_header.chunk_count += 1;
+            try world_save_writer.writeStruct(save_header);
+            break :ablk ChunkHandle{ .index = save_header.chunk_count, .coords = chunk.coords };
+        };
+        try world_save_reader.skipBytes((@sizeOf(ChunkHandle) + @intCast(u32, Chunk.dim.x) * @intCast(u32, Chunk.dim.y) * @intCast(i32, Chunk.dim.z)) * (world_chunk_handle.index - 1), .{});
+        try world_save_writer.writeStruct(ChunkHandle{ .index = world_chunk_handle.index, .coords = world_chunk_handle.coords });
+        try world_save_writer.writeAll(&chunk.block_data);
+    }
+}
+
 /// Creates a dummy world save.
 /// NOTE(caleb): This function will clobber the world save at 'world_save_path'.
 pub fn writeDummySave(world_save_path: []const u8, atlas: *Atlas) !void {
@@ -95,6 +116,14 @@ pub inline fn worldi32ToRel(pos: Vector3(i32)) Vector3(u8) {
     result.x = @intCast(u8, @mod(pos.x, @intCast(i32, Chunk.dim.x)));
     result.y = @intCast(u8, @mod(pos.y, @intCast(i32, Chunk.dim.y)));
     result.z = @intCast(u8, @mod(pos.z, @intCast(i32, Chunk.dim.z)));
+    return result;
+}
+
+pub inline fn worldf32ToRel(pos: rl.Vector3) Vector3(u8) {
+    var result: Vector3(u8) = undefined;
+    result.x = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.x)), @intCast(i32, Chunk.dim.x)));
+    result.y = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.y)), @intCast(i32, Chunk.dim.y)));
+    result.z = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.z)), @intCast(i32, Chunk.dim.z)));
     return result;
 }
 

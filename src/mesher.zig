@@ -350,16 +350,16 @@ pub fn updateChunkMeshesSpatially(
     }
 }
 
+/// BUG(caleb): I think this is a bug? On linux VAO ids increment rather than using the
+/// VAO id that was just made avaliable.
 /// Unload mesh from memory (RAM and VRAM)
 pub fn unloadMesh(mesh: rl.Mesh) void {
     // Unload rlgl mesh vboId data
     rl.rlUnloadVertexArray(mesh.vaoId);
     if (mesh.vboId != null) {
         const max_mesh_vertex_buffers = 7;
-        var vertex_buffer_index: u8 = 0;
-        while (vertex_buffer_index < max_mesh_vertex_buffers) : (vertex_buffer_index += 1) {
-            rl.rlUnloadVertexBuffer(mesh.vboId[vertex_buffer_index]);
-        }
+        for (0..max_mesh_vertex_buffers) |vbo_index|
+            rl.rlUnloadVertexBuffer(mesh.vboId[vbo_index]);
     }
     rl.MemFree(mesh.vboId);
 }
