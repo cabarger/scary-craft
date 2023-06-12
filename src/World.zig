@@ -109,7 +109,7 @@ pub fn loadSave(world: *Self, world_save_path: []const u8) !void {
 // TODO(caleb): Convention:
 // world - block position in world space
 // chunk - chunk coords
-// rel - chunk relative block coords
+// rel - chunk relative coords
 
 pub inline fn worldi32ToRel(pos: Vector3(i32)) Vector3(u8) {
     var result: Vector3(u8) = undefined;
@@ -119,8 +119,16 @@ pub inline fn worldi32ToRel(pos: Vector3(i32)) Vector3(u8) {
     return result;
 }
 
+pub inline fn worldf32ToWorldi32(pos: rl.Vector3) Vector3(i32) {
+    var result: Vector3(i32) = undefined;
+    result.x = @floatToInt(i32, @floor(pos.x));
+    result.y = @floatToInt(i32, @floor(pos.y));
+    result.z = @floatToInt(i32, @floor(pos.z));
+    return result;
+}
+
 pub inline fn worldf32ToRel(pos: rl.Vector3) Vector3(u8) {
-    var result: Vector3(u8) = undefined;
+    var result = std.mem.zeroInit(Vector3(u8), .{});
     result.x = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.x)), @intCast(i32, Chunk.dim.x)));
     result.y = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.y)), @intCast(i32, Chunk.dim.y)));
     result.z = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.z)), @intCast(i32, Chunk.dim.z)));
@@ -128,7 +136,7 @@ pub inline fn worldf32ToRel(pos: rl.Vector3) Vector3(u8) {
 }
 
 pub inline fn worldf32ToChunkRel(pos: rl.Vector3) Vector3(u8) {
-    var result: Vector3(u8) = undefined;
+    var result = std.mem.zeroInit(Vector3(u8), .{});
     result.x = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.x)), @intCast(i32, Chunk.dim.x)));
     result.y = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.y)), @intCast(i32, Chunk.dim.y)));
     result.z = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.z)), @intCast(i32, Chunk.dim.z)));

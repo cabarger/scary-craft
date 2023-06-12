@@ -55,7 +55,7 @@ inline fn setVertex3f(verticies: []f32, verticies_offset: *u32, x: f32, y: f32, 
     verticies_offset.* += 3;
 }
 
-inline fn shouldDrawFace(world: *World, chunk_index: usize, block_x: u8, block_y: u8, block_z: u8, face_normal: Vector3(i32)) bool {
+fn shouldDrawFace(world: *World, atlas: *Atlas, chunk_index: usize, block_x: u8, block_y: u8, block_z: u8, face_normal: Vector3(i32)) bool {
     var chunk_coords = Vector3(i32){
         .x = @divFloor(@intCast(i32, block_x) + face_normal.x, Chunk.dim.x),
         .y = @divFloor(@intCast(i32, block_y) + face_normal.y, Chunk.dim.y),
@@ -68,15 +68,20 @@ inline fn shouldDrawFace(world: *World, chunk_index: usize, block_x: u8, block_y
     var wrapped_y: Chunk.u_dimy = if (face_normal.y >= 0) @intCast(Chunk.u_dimy, block_y) +% @intCast(Chunk.u_dimy, face_normal.y) else @intCast(Chunk.u_dimy, block_y) -% 1;
     var wrapped_z: Chunk.u_dimz = if (face_normal.z >= 0) @intCast(Chunk.u_dimz, block_z) +% @intCast(Chunk.u_dimz, face_normal.z) else @intCast(Chunk.u_dimz, block_z) -% 1;
 
-    return !isSolidBlock(&world.loaded_chunks[border_or_same_chunk_index].block_data, wrapped_x, wrapped_y, wrapped_z);
+    return isAirBlock(world, border_or_same_chunk_index, wrapped_x, wrapped_y, wrapped_z) or isTransBlock(world, atlas, border_or_same_chunk_index, wrapped_x, wrapped_y, wrapped_z);
 }
 
-inline fn isSolidBlock(dense_map: []u8, x: u8, y: u8, z: u8) bool {
-    var result = false;
-    if (dense_map[@intCast(u16, Chunk.dim.x * Chunk.dim.y) * z + y * @intCast(u16, Chunk.dim.x) + x] != 0) {
-        result = true;
-    }
-    return result;
+inline fn isAirBlock(world: *World, chunk_index: usize, x: u8, y: u8, z: u8) bool {
+    if (world.loaded_chunks[chunk_index].fetch(x, y, z).? == 0)
+        return true;
+    return false;
+}
+
+inline fn isTransBlock(world: *World, atlas: *Atlas, chunk_index: usize, x: u8, y: u8, z: u8) bool {
+    const block_id = world.loaded_chunks[chunk_index].fetch(x, y, z).?;
+    if (block_id != 0 and (atlas.id_to_block_data.get(block_id) orelse unreachable).is_trans)
+        return true;
+    return false;
 }
 
 /// Generate chunk sized mesh starting at world origin.
@@ -101,9 +106,9 @@ pub fn cullMesh(
                 var block_x: u8 = 0;
                 while (block_x < Chunk.dim.x) : (block_x += 1) {
                     for (World.d_chunk_coordses) |d_chunk_coords| {
-                        if (!isSolidBlock(&world.loaded_chunks[chunk_index].block_data, block_x, block_y, block_z))
+                        if (isAirBlock(world, chunk_index, block_x, block_y, block_z))
                             continue;
-                        face_count += if (shouldDrawFace(world, chunk_index, block_x, block_y, block_z, d_chunk_coords)) 1 else 0;
+                        face_count += if (shouldDrawFace(world, sprite_sheet, chunk_index, block_x, block_y, block_z, d_chunk_coords)) 1 else 0;
                     }
                 }
             }
@@ -130,7 +135,7 @@ pub fn cullMesh(
             while (block_z < Chunk.dim.z) : (block_z += 1) {
                 var block_x: u8 = 0;
                 while (block_x < Chunk.dim.x) : (block_x += 1) {
-                    if (!isSolidBlock(&world.loaded_chunks[chunk_index].block_data, block_x, block_y, block_z))
+                    if (isAirBlock(world, chunk_index, block_x, block_y, block_z))
                         continue;
 
                     const block_pos = rl.Vector3{
@@ -148,7 +153,7 @@ pub fn cullMesh(
                     const texcoord_end_y = texcoord_start_y + 128 / @intToFloat(f32, sprite_sheet.texture.height);
 
                     // Top Face
-                    if (shouldDrawFace(world, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = 0, .y = 1, .z = 0 })) {
+                    if (shouldDrawFace(world, sprite_sheet, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = 0, .y = 1, .z = 0 })) {
                         setFaceNormals(normals, &normals_offset, 0, 1, 0); // Normals pointing up
                         setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y + block_dim.y, block_pos.z + block_dim.z); // Bottom left texture and vertex
@@ -165,7 +170,7 @@ pub fn cullMesh(
                     }
 
                     // Front face
-                    if (shouldDrawFace(world, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = 0, .y = 0, .z = 1 })) {
+                    if (shouldDrawFace(world, sprite_sheet, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = 0, .y = 0, .z = 1 })) {
                         setFaceNormals(normals, &normals_offset, 0, 0, 1); // Normals pointing towards viewer
 
                         setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
@@ -186,7 +191,7 @@ pub fn cullMesh(
                     }
 
                     // Back face
-                    if (shouldDrawFace(world, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = 0, .y = 0, .z = -1 })) {
+                    if (shouldDrawFace(world, sprite_sheet, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = 0, .y = 0, .z = -1 })) {
                         setFaceNormals(normals, &normals_offset, 0, 0, -1); // Normals pointing away from viewer
                         setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y, block_pos.z); // Bottom left texture and vertex
@@ -203,7 +208,7 @@ pub fn cullMesh(
                     }
 
                     // Bottom face
-                    if (shouldDrawFace(world, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = 0, .y = -1, .z = 0 })) {
+                    if (shouldDrawFace(world, sprite_sheet, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = 0, .y = -1, .z = 0 })) {
                         setFaceNormals(normals, &normals_offset, 0.0, -1.0, 0.0); // Normals pointing down
                         setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y, block_pos.z); // Bottom left texture and vertex
@@ -220,7 +225,7 @@ pub fn cullMesh(
                     }
 
                     // Right face
-                    if (shouldDrawFace(world, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = 1, .y = 0, .z = 0 })) {
+                    if (shouldDrawFace(world, sprite_sheet, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = 1, .y = 0, .z = 0 })) {
                         setFaceNormals(normals, &normals_offset, 1.0, 0.0, 0.0); // Normals pointing right
                         setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y, block_pos.z + block_dim.z); // Bottom left of the texture and vertex
@@ -237,7 +242,7 @@ pub fn cullMesh(
                     }
 
                     // Left Face
-                    if (shouldDrawFace(world, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = -1, .y = 0, .z = 0 })) {
+                    if (shouldDrawFace(world, sprite_sheet, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = -1, .y = 0, .z = 0 })) {
                         setFaceNormals(normals, &normals_offset, -1.0, 0.0, 0.0); // Normals Pointing Left
                         setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y, block_pos.z); // Bottom left of the texture and texture

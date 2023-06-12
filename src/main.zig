@@ -9,6 +9,7 @@ const Chunk = @import("Chunk.zig");
 const World = @import("World.zig");
 const Atlas = @import("Atlas.zig");
 const Frustum = @import("math/Frustum.zig");
+const Plane = @import("math/Plane.zig");
 
 const ArrayList = std.ArrayList;
 const AutoHashMap = std.AutoHashMap;
@@ -23,14 +24,21 @@ const Vector3 = scary_types.Vector3;
 
 const hashString = std.hash_map.hashString;
 
+// FIXME(caleb):
+// Fix the renderer :(
+// Collision system
+
 // TODO(caleb):
 // -----------------------------------------------------------------------------------
+// Gravity/Jump/player collision
 // Player collision volume
-// Functional frustum culling ( do this when game gets slow? )
-// Gravity/Jump
+// @Vector
+// NON JANK console
 
 // OBJECTIVES (possibly in the form of notes that you can pick up?)
 // INSERT SCARY ENEMY IDEAS HERE...
+
+// Functional frustum culling ( do this when game gets slow? )
 
 const meters_per_block = 1;
 
@@ -39,7 +47,7 @@ const crosshair_length_in_pixels = 20;
 
 const camera_offset_y = -0.3;
 const player_width = meters_per_block / 2;
-const player_height = meters_per_block * 2;
+const player_height = meters_per_block * 2 - rl.EPSILON;
 const player_length = player_width;
 
 const target_fps = 120;
@@ -65,8 +73,8 @@ const Light = struct {
     color_loc: c_int,
 };
 
-const Direction = enum {
-    up,
+const Direction = enum(usize) {
+    up = 0,
     down,
     right,
     left,
@@ -74,35 +82,19 @@ const Direction = enum {
     backward,
 };
 
-/// Update camera movement, movement/rotation values should be provided by user
-fn updateCameraPro(camera: *rl.Camera, movement: rl.Vector3, rotation: rl.Vector3, zoom: f32) void {
-    // Required values
-    // movement.x - Move forward/backward
-    // movement.y - Move right/left
-    // movement.z - Move up/down
-    // rotation.x - yaw
-    // rotation.y - pitch
-    // rotation.z - roll
-    // zoom - Move towards target
+const directions = [_]rl.Vector3{
+    rl.Vector3{ .x = 0, .y = 1, .z = 0 }, // Up
+    rl.Vector3{ .x = 0, .y = -1, .z = 0 }, // Down
+    rl.Vector3{ .x = 1, .y = 0, .z = 0 }, // Right
+    rl.Vector3{ .x = -1, .y = 0, .z = 0 }, // Left
+    rl.Vector3{ .x = 0, .y = 0, .z = -1 }, // Forward
+    rl.Vector3{ .x = 0, .y = 0, .z = 1 }, // Backwrad
+};
 
-    var lockView = true;
-    var rotateAroundTarget = false;
-    var rotateUp = false;
-    var moveInWorldPlane = true;
-
-    // Camera rotation
-    rl.CameraPitch(camera, -rotation.y * rl.DEG2RAD, lockView, rotateAroundTarget, rotateUp);
-    rl.CameraYaw(camera, -rotation.x * rl.DEG2RAD, rotateAroundTarget);
-    rl.CameraRoll(camera, rotation.z * rl.DEG2RAD);
-
-    // Camera movement
-    rl.CameraMoveForward(camera, movement.x, moveInWorldPlane);
-    rl.CameraMoveRight(camera, movement.y, moveInWorldPlane);
-    rl.CameraMoveUp(camera, movement.z);
-
-    // Zoom target distance
-    rl.CameraMoveToTarget(camera, zoom);
-}
+const VoxelCollision = struct {
+    chunk_index: usize,
+    chunk_rel_coords: Vector3(u8),
+};
 
 /// Updates bounding box positions to point p
 fn shiftBoundingBox(bb: *rl.BoundingBox, p: rl.Vector3) void {
@@ -159,18 +151,40 @@ inline fn lookDirection(direction: rl.Vector3) Direction {
     return look_direction;
 }
 
-fn playerWouldCollideWithBlock(world: *World, player_position: rl.Vector3, player_velocity: rl.Vector3) bool {
-    const chunk_rel_player_position = World.worldf32ToRel(rl.Vector3Add(player_position, player_velocity));
-    const player_chunk_coords = World.worldf32ToChunki32(rl.Vector3Add(player_position, player_velocity));
-    const player_chunk_index = world.chunkIndexFromCoords(player_chunk_coords) orelse unreachable;
-    if ((world.loaded_chunks[player_chunk_index].fetch(chunk_rel_player_position.x, chunk_rel_player_position.y, chunk_rel_player_position.z) orelse unreachable) != 0) {
-        return true;
-    } else {
-        const chunk_rel_player_top_position = World.worldf32ToRel(rl.Vector3{ .x = player_position.x + player_velocity.x, .y = player_position.y + player_velocity.y + meters_per_block, .z = player_position.z + player_velocity.z });
-        const player_top_chunk_coords = World.worldf32ToChunki32(rl.Vector3{ .x = player_position.x + player_velocity.x, .y = player_position.y + player_velocity.y + meters_per_block, .z = player_position.z + player_velocity.z });
-        const player_top_chunk_index = world.chunkIndexFromCoords(player_top_chunk_coords) orelse unreachable;
-        if ((world.loaded_chunks[player_top_chunk_index].fetch(chunk_rel_player_top_position.x, chunk_rel_player_top_position.y, chunk_rel_player_top_position.z) orelse unreachable) != 0) {
-            return true;
+/// Figure out which voxel a player is colliding with.
+// fn getPlayerVoxelCollision(world: *World, player_position: rl.Vector3, player_velocity: rl.Vector3) ?VoxelCollision {
+//     const chunk_rel_player_bot_position = World.worldf32ToRel(rl.Vector3Add(player_position, player_velocity));
+//     const player_bot_chunk_coords = World.worldf32ToChunki32(rl.Vector3Add(player_position, player_velocity));
+//     const player_bot_chunk_index = world.chunkIndexFromCoords(player_bot_chunk_coords) orelse unreachable;
+//     if ((world.loaded_chunks[player_bot_chunk_index].fetch(chunk_rel_player_bot_position.x, chunk_rel_player_bot_position.y, chunk_rel_player_bot_position.z) orelse unreachable) != 0) {
+//         return VoxelCollision{ .chunk_index = player_bot_chunk_index, .chunk_rel_coords = chunk_rel_player_bot_position };
+//     } // else {
+//     //     const chunk_rel_player_top_position = World.worldf32ToRel(rl.Vector3{ .x = player_position.x + player_velocity.x, .y = player_position.y + player_velocity.y + meters_per_block, .z = player_position.z + player_velocity.z });
+//     //     const player_top_chunk_coords = World.worldf32ToChunki32(rl.Vector3{ .x = player_position.x + player_velocity.x, .y = player_position.y + player_velocity.y + meters_per_block, .z = player_position.z + player_velocity.z });
+//     //     const player_top_chunk_index = world.chunkIndexFromCoords(player_top_chunk_coords) orelse unreachable;
+//     //     if ((world.loaded_chunks[player_top_chunk_index].fetch(chunk_rel_player_top_position.x, chunk_rel_player_top_position.y, chunk_rel_player_top_position.z) orelse unreachable) != 0) {
+//     //         return VoxelCollision{ .chunk_index = player_top_chunk_index, .chunk_rel_coords = chunk_rel_player_top_position };
+//     //     }
+//     // }
+//     return null;
+// }
+
+fn asdf(world: *World, velocity: rl.Vector3, aabb: rl.BoundingBox) bool {
+    const world_min = World.worldf32ToWorldi32(rl.Vector3Add(aabb.min, velocity));
+    const world_max = World.worldf32ToWorldi32(rl.Vector3Add(aabb.max, velocity));
+
+    var world_block_pos = world_min;
+    while (world_block_pos.x <= world_max.x) : (world_block_pos.x += 1) {
+        while (world_block_pos.y <= world_max.y) : (world_block_pos.y += 1) {
+            while (world_block_pos.z <= world_max.z) : (world_block_pos.z += 1) {
+                const chunk_coords = World.worldi32ToChunki32(world_block_pos);
+                const chunk_index = world.chunkIndexFromCoords(chunk_coords) orelse unreachable;
+                const chunk_rel_pos = World.worldi32ToRel(world_block_pos);
+
+                if ((world.loaded_chunks[chunk_index].fetch(chunk_rel_pos.x, chunk_rel_pos.y, chunk_rel_pos.z) orelse unreachable) != 0) {
+                    return true;
+                }
+            }
         }
     }
     return false;
@@ -227,7 +241,6 @@ pub fn main() !void {
     camera.projection = rl.CAMERA_PERSPECTIVE;
 
     var player_bounding_box: rl.BoundingBox = undefined;
-    _ = player_bounding_box;
     var last_camera_position = camera.position;
 
     // try World.writeDummySave("data/world.sav", &atlas);
@@ -291,25 +304,21 @@ pub fn main() !void {
         }
 
         var player_position = rl.Vector3Add(camera.position, rl.Vector3{ .x = 0, .y = -player_height - camera_offset_y, .z = 0 });
+        shiftBoundingBox(&player_bounding_box, player_position);
 
-        if (playerWouldCollideWithBlock(&world, player_position, rl.Vector3{ .x = player_velocity.y, .y = 0, .z = 0 })) player_velocity.y = 0;
-        if (playerWouldCollideWithBlock(&world, player_position, rl.Vector3{ .x = 0, .y = player_velocity.z, .z = 0 })) player_velocity.z = 0;
-        if (playerWouldCollideWithBlock(&world, player_position, rl.Vector3{ .x = 0, .y = 0, .z = player_velocity.x })) player_velocity.x = 0;
-
-        updateCameraPro(&camera, player_velocity, rl.Vector3{ .x = rl.GetMouseDelta().x * mouse_sens, .y = rl.GetMouseDelta().y * mouse_sens, .z = 0 }, 0); //rl.GetMouseWheelMove());
-
-        // Player is in a block
-        if (playerWouldCollideWithBlock(&world, player_position, rl.Vector3{ .x = 0, .y = 0, .z = 0 })) {
-            const last_player_position = rl.Vector3Add(last_camera_position, rl.Vector3{ .x = 0, .y = -player_height - camera_offset_y, .z = 0 });
-            std.debug.print("{d:.4},{d:.4},{d:.4}\n", .{
-                last_player_position.x,
-                last_player_position.y,
-                last_player_position.z,
-            });
-            unreachable;
+        if (asdf(&world, rl.Vector3{ .x = player_velocity.y, .y = 0, .z = 0 }, player_bounding_box)) {
+            player_velocity.y = 0;
+        }
+        if (asdf(&world, rl.Vector3{ .x = 0, .y = player_velocity.z, .z = 0 }, player_bounding_box)) {
+            player_velocity.z = 0;
+        }
+        if (asdf(&world, rl.Vector3{ .x = 0, .y = 0, .z = player_velocity.x }, player_bounding_box)) {
+            player_velocity.x = 0;
         }
 
-        player_position = rl.Vector3Add(camera.position, rl.Vector3{ .x = 0, .y = -player_height - camera_offset_y, .z = 0 });
+        rl.UpdateCameraPro(&camera, player_velocity, rl.Vector3{ .x = rl.GetMouseDelta().x * mouse_sens, .y = rl.GetMouseDelta().y * mouse_sens, .z = 0 }, 0); //rl.GetMouseWheelMove());
+
+        player_position = rl.Vector3Add(camera.position, rl.Vector3{ .x = -player_width * 0.5, .y = -player_height - camera_offset_y, .z = -player_length * 0.5 });
         const player_chunk_coords = Vector3(i32){
             .x = @floatToInt(i32, @divFloor(player_position.x, @intToFloat(f32, Chunk.dim.x))),
             .y = @floatToInt(i32, @divFloor(player_position.y, @intToFloat(f32, Chunk.dim.y))),
