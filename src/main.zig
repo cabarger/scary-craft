@@ -30,6 +30,7 @@ const hashString = std.hash_map.hashString;
 
 // TODO(caleb):
 // -----------------------------------------------------------------------------------
+// 3rd person camera
 // Gravity/Jump/player collision
 // Player collision volume
 // @Vector
@@ -91,14 +92,96 @@ const directions = [_]rl.Vector3{
     rl.Vector3{ .x = 0, .y = 0, .z = 1 }, // Backwrad
 };
 
-const VoxelCollision = struct {
-    chunk_index: usize,
-    chunk_rel_coords: Vector3(u8),
-};
+/// Moves the player and camera in camera's forward direction
+fn playerAndCameraMoveForward(player_position: *rl.Vector3, camera: *rl.Camera, distance: f32, moveInWorldPlane: bool) void {
+    var forward = rl.GetCameraForward(camera);
+
+    if (moveInWorldPlane) {
+        // Project vector onto world plane
+        forward.y = 0;
+        forward = rl.Vector3Normalize(forward);
+    }
+
+    // Scale by distance
+    forward = rl.Vector3Scale(forward, distance);
+
+    // Move position and target
+    player_position.* = rl.Vector3Add(player_position.*, forward);
+    camera.position = rl.Vector3Add(camera.position, forward);
+    camera.target = rl.Vector3Add(camera.target, forward);
+}
+
+/// Moves player and camera in camera's right direction
+fn playerAndCameraMoveRight(player_position: *rl.Vector3, camera: *rl.Camera, distance: f32, move_in_world_plane: bool) void {
+    var right = rl.GetCameraRight(camera);
+
+    if (move_in_world_plane) {
+        // Project vector onto world plane
+        right.y = 0;
+        right = rl.Vector3Normalize(right);
+    }
+
+    // Scale by distance
+    right = rl.Vector3Scale(right, distance);
+
+    // Move position and target
+    player_position.* = rl.Vector3Add(player_position.*, right);
+    camera.position = rl.Vector3Add(camera.position, right);
+    camera.target = rl.Vector3Add(camera.target, right);
+}
+
+/// Moves the player and camera in camera's up direction
+fn playerAndCameraMoveUp(player_position: *rl.Vector3, camera: *rl.Camera, distance: f32) void {
+    var up = rl.GetCameraUp(camera);
+
+    // Scale by distance
+    up = rl.Vector3Scale(up, distance);
+
+    // Move position and target
+    player_position.* = rl.Vector3Add(player_position.*, up);
+    camera.position = rl.Vector3Add(camera.position, up);
+    camera.target = rl.Vector3Add(camera.target, up);
+}
+
+/// Rotates the camera by rotation amount x,y given in deg
+fn rotateCamera(camera: *rl.Camera, rotation: rl.Vector3) void {
+    rl.CameraPitch(
+        camera,
+        -rotation.y * rl.DEG2RAD,
+        true, // Lock view
+        false, // Rotate around target
+        false, // Rotate up
+    );
+    rl.CameraYaw(
+        camera,
+        -rotation.x * rl.DEG2RAD,
+        false, // Rotate around target
+    );
+    rl.CameraRoll(camera, rotation.z * rl.DEG2RAD);
+}
+
+/// Moves the player and camera
+fn movePlayerAndCamera(player_position: *rl.Vector3, camera: *rl.Camera, movement: rl.Vector3) void {
+    playerAndCameraMoveForward(
+        player_position,
+        camera,
+        movement.x,
+        true, // Move in world plane
+    );
+    playerAndCameraMoveRight(
+        player_position,
+        camera,
+        movement.y,
+        true, // Move in world plane
+    );
+    playerAndCameraMoveUp(player_position, camera, movement.z);
+}
 
 /// Updates bounding box positions to point p
 fn shiftBoundingBox(bb: *rl.BoundingBox, p: rl.Vector3) void {
-    bb.min = p;
+    bb.min.x = p.x - player_width * 0.5;
+    bb.min.y = p.y;
+    bb.min.z = p.z - player_length * 0.5;
     bb.max.x = bb.min.x + player_width;
     bb.max.y = bb.min.y + player_height;
     bb.max.z = bb.min.z + player_length;
@@ -151,24 +234,6 @@ inline fn lookDirection(direction: rl.Vector3) Direction {
     return look_direction;
 }
 
-/// Figure out which voxel a player is colliding with.
-// fn getPlayerVoxelCollision(world: *World, player_position: rl.Vector3, player_velocity: rl.Vector3) ?VoxelCollision {
-//     const chunk_rel_player_bot_position = World.worldf32ToRel(rl.Vector3Add(player_position, player_velocity));
-//     const player_bot_chunk_coords = World.worldf32ToChunki32(rl.Vector3Add(player_position, player_velocity));
-//     const player_bot_chunk_index = world.chunkIndexFromCoords(player_bot_chunk_coords) orelse unreachable;
-//     if ((world.loaded_chunks[player_bot_chunk_index].fetch(chunk_rel_player_bot_position.x, chunk_rel_player_bot_position.y, chunk_rel_player_bot_position.z) orelse unreachable) != 0) {
-//         return VoxelCollision{ .chunk_index = player_bot_chunk_index, .chunk_rel_coords = chunk_rel_player_bot_position };
-//     } // else {
-//     //     const chunk_rel_player_top_position = World.worldf32ToRel(rl.Vector3{ .x = player_position.x + player_velocity.x, .y = player_position.y + player_velocity.y + meters_per_block, .z = player_position.z + player_velocity.z });
-//     //     const player_top_chunk_coords = World.worldf32ToChunki32(rl.Vector3{ .x = player_position.x + player_velocity.x, .y = player_position.y + player_velocity.y + meters_per_block, .z = player_position.z + player_velocity.z });
-//     //     const player_top_chunk_index = world.chunkIndexFromCoords(player_top_chunk_coords) orelse unreachable;
-//     //     if ((world.loaded_chunks[player_top_chunk_index].fetch(chunk_rel_player_top_position.x, chunk_rel_player_top_position.y, chunk_rel_player_top_position.z) orelse unreachable) != 0) {
-//     //         return VoxelCollision{ .chunk_index = player_top_chunk_index, .chunk_rel_coords = chunk_rel_player_top_position };
-//     //     }
-//     // }
-//     return null;
-// }
-
 fn asdf(world: *World, velocity: rl.Vector3, aabb: rl.BoundingBox) bool {
     const world_min = World.worldf32ToWorldi32(rl.Vector3Add(aabb.min, velocity));
     const world_max = World.worldf32ToWorldi32(rl.Vector3Add(aabb.max, velocity));
@@ -193,7 +258,7 @@ fn asdf(world: *World, velocity: rl.Vector3, aabb: rl.BoundingBox) bool {
 pub fn main() !void {
     const screen_width: c_int = 1920;
     const screen_height: c_int = 1080;
-    rl.InitWindow(screen_width, screen_height, "Scary Craft");
+    rl.InitWindow(screen_width, screen_height, "Scary Craft :o");
     rl.SetConfigFlags(rl.FLAG_MSAA_4X_HINT);
     rl.SetWindowState(rl.FLAG_WINDOW_RESIZABLE);
     rl.SetTargetFPS(target_fps);
@@ -303,7 +368,7 @@ pub fn main() !void {
             rgui.GuiEnable();
         }
 
-        var player_position = rl.Vector3Add(camera.position, rl.Vector3{ .x = 0, .y = -player_height - camera_offset_y, .z = 0 });
+        var player_position = rl.Vector3Add(camera.position, rl.Vector3{ .x = -player_width * 0.5, .y = -player_height - camera_offset_y, .z = -player_length * 0.5 });
         shiftBoundingBox(&player_bounding_box, player_position);
 
         if (asdf(&world, rl.Vector3{ .x = player_velocity.y, .y = 0, .z = 0 }, player_bounding_box)) {
@@ -316,9 +381,11 @@ pub fn main() !void {
             player_velocity.x = 0;
         }
 
-        rl.UpdateCameraPro(&camera, player_velocity, rl.Vector3{ .x = rl.GetMouseDelta().x * mouse_sens, .y = rl.GetMouseDelta().y * mouse_sens, .z = 0 }, 0); //rl.GetMouseWheelMove());
+        rotateCamera(&camera, rl.Vector3{ .x = rl.GetMouseDelta().x * mouse_sens, .y = rl.GetMouseDelta().y * mouse_sens, .z = 0 });
+        movePlayerAndCamera(&player_position, &camera, player_velocity);
 
-        player_position = rl.Vector3Add(camera.position, rl.Vector3{ .x = -player_width * 0.5, .y = -player_height - camera_offset_y, .z = -player_length * 0.5 });
+        if (asdf(&world, rl.Vector3{ .x = 0, .y = 0, .z = 0 }, player_bounding_box)) unreachable;
+
         const player_chunk_coords = Vector3(i32){
             .x = @floatToInt(i32, @divFloor(player_position.x, @intToFloat(f32, Chunk.dim.x))),
             .y = @floatToInt(i32, @divFloor(player_position.y, @intToFloat(f32, Chunk.dim.y))),
