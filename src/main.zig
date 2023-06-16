@@ -181,13 +181,15 @@ fn updatePositionAndTarget(position: *rl.Vector3, target: *rl.Vector3, up: rl.Ve
 }
 
 /// Updates bounding box positions to point p
-fn shiftBoundingBox(bb: *rl.BoundingBox, p: rl.Vector3) void {
+fn playerBoundingBox(p: rl.Vector3) rl.BoundingBox {
+    var bb: rl.BoundingBox = undefined;
     bb.min.x = p.x - player_width * 0.5;
     bb.min.y = p.y - player_height * 0.5;
     bb.min.z = p.z - player_length * 0.5;
     bb.max.x = bb.min.x + player_width;
     bb.max.y = bb.min.y + player_height;
     bb.max.z = bb.min.z + player_length;
+    return bb;
 }
 
 fn updateLightValues(shader: rl.Shader, light: *Light) void {
@@ -237,17 +239,20 @@ inline fn lookDirection(direction: rl.Vector3) Direction {
     return look_direction;
 }
 
-fn asdf(world: *World, velocity: rl.Vector3, aabb: rl.BoundingBox) bool {
-    std.debug.assert(velocity.x <= player_width and velocity.y <= player_height and velocity.z <= player_length);
+fn asdf(world: *World, velocity: rl.Vector3, aabb: rl.BoundingBox, up: rl.Vector3) bool {
+    _ = up;
 
-    const world_min = World.worldf32ToWorldi32(rl.Vector3Add(aabb.min, velocity));
-    const world_max = World.worldf32ToWorldi32(rl.Vector3Add(aabb.max, velocity));
+    const world_min = World.worldf32ToWorldi32(rl.Vector3{
+        .x = aabb.min.x + velocity.y,
+        .y = aabb.min.y + velocity.z,
+        .z = aabb.min.z + velocity.x,
+    });
 
-    var blocks_checked: usize = 0;
-    _ = blocks_checked;
-
-    std.debug.print("{?}\n", .{world_min});
-    std.debug.print("{?}\n", .{world_max});
+    const world_max = World.worldf32ToWorldi32(rl.Vector3{
+        .x = aabb.max.x + velocity.y,
+        .y = aabb.max.y + velocity.z,
+        .z = aabb.max.z + velocity.x,
+    });
 
     var world_block_pos = world_min;
     while (world_block_pos.z <= world_max.z) : (world_block_pos.z += 1) {
@@ -263,7 +268,6 @@ fn asdf(world: *World, velocity: rl.Vector3, aabb: rl.BoundingBox) bool {
             }
         }
     }
-    // std.debug.print("{d}\n", .{blocks_checked});
     return false;
 }
 
@@ -325,8 +329,6 @@ pub fn main() !void {
     camera.projection = rl.CAMERA_PERSPECTIVE;
 
     var last_player_position = player.position;
-    var player_bounding_box: rl.BoundingBox = undefined;
-    shiftBoundingBox(&player_bounding_box, player.position);
 
     try World.writeDummySave("data/world.sav", &atlas);
     var world = World.init(arena_ally);
@@ -399,26 +401,23 @@ pub fn main() !void {
             rgui.GuiEnable();
         }
 
-        if (asdf(&world, rl.Vector3{ .x = player_velocity.y, .y = 0, .z = 0 }, player_bounding_box)) {
-            player_velocity.y = 0;
-        }
-        if (asdf(&world, rl.Vector3{ .x = 0, .y = player_velocity.z, .z = 0 }, player_bounding_box)) {
-            player_velocity.z = 0;
-        }
-        if (asdf(&world, rl.Vector3{ .x = 0, .y = 0, .z = player_velocity.x }, player_bounding_box)) {
-            player_velocity.x = 0;
-        }
+        // if (asdf(&world, rl.Vector3{ .x = player_velocity.y, .y = 0, .z = 0 }, player_bounding_box, player.up)) {
+        //     player_velocity.y = 0;
+        // }
+        // if (asdf(&world, rl.Vector3{ .x = 0, .y = player_velocity.z, .z = 0 }, player_bounding_box, player.up)) {
+        //     player_velocity.z = 0;
+        // }
+        // if (asdf(&world, rl.Vector3{ .x = 0, .y = 0, .z = player_velocity.x }, player_bounding_box, player.up)) {
+        //     player_velocity.x = 0;
+        // }
 
         rotateCamera(&camera, rl.Vector3{ .x = rl.GetMouseDelta().x * mouse_sens, .y = rl.GetMouseDelta().y * mouse_sens, .z = 0 }, !camera_in_first_person);
         updatePositionAndTarget(&camera.position, &camera.target, camera.up, player_velocity);
 
-        if (camera_in_first_person) {
-            player.target = camera.target;
-        }
+        player.target = camera.target;
         updatePositionAndTarget(&player.position, &player.target, player.up, player_velocity);
-        shiftBoundingBox(&player_bounding_box, player.position);
 
-        // if (asdf(&world, rl.Vector3{ .x = 0, .y = 0, .z = 0 }, player_bounding_box)) unreachable;
+        const player_bounding_box = playerBoundingBox(player.position);
 
         const player_chunk_coords = Vector3(i32){
             .x = @floatToInt(i32, @divFloor(player.position.x, @intToFloat(f32, Chunk.dim.x))),
@@ -526,6 +525,7 @@ pub fn main() !void {
 
         if (!camera_in_first_person) {
             rl.DrawBoundingBox(player_bounding_box, rl.GREEN);
+            // rl.DrawBoundingBox(last_bounding_box, rl.RED);
             rl.DrawSphere(rl.Vector3Add(player.position, rl.Vector3{ .x = 0, .y = camera_offset_y, .z = 0 }), 0.03, rl.RED);
             rl.DrawLine3D(player.position, rl.Vector3Add(player.position, getForwardVector(player.position, player.target)), rl.RED);
         }
