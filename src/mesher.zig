@@ -115,6 +115,17 @@ pub fn cullMesh(
         }
     }
 
+    if (face_count == 0) { // Null mesh and exit
+        result.mesh.vertices = null;
+        result.mesh.texcoords = null;
+        result.mesh.texcoords2 = null;
+        result.mesh.normals = null;
+        result.mesh.tangents = null;
+        result.mesh.colors = null;
+        result.mesh.indices = null;
+        return result;
+    }
+
     var fb = FixedBufferAllocator.init(result.mem);
     var ally = fb.allocator();
 
