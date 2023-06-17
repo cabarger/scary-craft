@@ -26,12 +26,9 @@ const hashString = std.hash_map.hashString;
 
 // FIXME(caleb):
 // Fix the renderer :(
-// Collision system
 
 // TODO(caleb):
 // -----------------------------------------------------------------------------------
-// Gravity/Jump/player collision
-// Player collision volume
 // @Vector
 // NON JANK console
 
@@ -45,10 +42,13 @@ const meters_per_block = 1.0;
 const crosshair_thickness_in_pixels = 2;
 const crosshair_length_in_pixels = 20;
 
-const camera_offset_y = 0.75;
-const player_width = meters_per_block / 2.0;
-const player_height = meters_per_block * 2.0 - 0.2;
+const camera_offset_y = meters_per_block * 0.6;
+const player_width = meters_per_block * 0.1;
+const player_height = meters_per_block * 1.5;
 const player_length = player_width;
+
+const gravity_y_per_second = meters_per_block * 0.2;
+const jump_y_velocity = 0.07;
 
 const target_fps = 120;
 const fovy = 60.0;
@@ -63,6 +63,7 @@ const Player = struct {
     position: rl.Vector3,
     up: rl.Vector3,
     target: rl.Vector3,
+    in_air: bool,
 };
 
 const Light = struct {
@@ -327,6 +328,7 @@ pub fn main() !void {
         .position = rl.Vector3{ .x = 8, .y = 8, .z = 8 },
         .up = rl.Vector3{ .x = 0, .y = 1, .z = 0 },
         .target = rl.Vector3{ .x = 8, .y = 8, .z = 7 },
+        .in_air = false,
     };
 
     var camera_in_first_person = true;
@@ -338,6 +340,7 @@ pub fn main() !void {
     camera.projection = rl.CAMERA_PERSPECTIVE;
 
     var last_player_position = player.position;
+    var player_velocity = rl.Vector3{ .x = 0, .y = 0, .z = 0 };
 
     try World.writeDummySave("data/world.sav", &atlas);
     var world = World.init(arena_ally);
@@ -386,39 +389,56 @@ pub fn main() !void {
             speed_scalar = 2;
         }
 
-        var player_velocity = rl.Vector3{ .x = 0, .y = 0, .z = 0 };
+        var player_velocity_this_frame = rl.Vector3Zero();
+
         if (rl.IsKeyDown(rl.KEY_W)) {
-            player_velocity.x += move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * rl.GetFrameTime();
+            player_velocity_this_frame.x += move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * rl.GetFrameTime();
         }
         if (rl.IsKeyDown(rl.KEY_S)) {
-            player_velocity.x -= move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * rl.GetFrameTime();
+            player_velocity_this_frame.x -= move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * rl.GetFrameTime();
         }
         if (rl.IsKeyDown(rl.KEY_A)) {
-            player_velocity.y -= move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * rl.GetFrameTime();
+            player_velocity_this_frame.y -= move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * rl.GetFrameTime();
         }
         if (rl.IsKeyDown(rl.KEY_D)) {
-            player_velocity.y += move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * rl.GetFrameTime();
+            player_velocity_this_frame.y += move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * rl.GetFrameTime();
         }
-        if (rl.IsKeyDown(rl.KEY_SPACE)) {
-            player_velocity.z += move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * rl.GetFrameTime();
+        if (rl.IsKeyDown(rl.KEY_SPACE) and !player.in_air) {
+            // player_velocity_this_frame.z += move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * rl.GetFrameTime();
+            player_velocity.z = jump_y_velocity;
         }
         if (rl.IsKeyDown(rl.KEY_LEFT_CONTROL)) {
-            player_velocity.z -= move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * rl.GetFrameTime();
+            player_velocity_this_frame.z -= move_speed_blocks_per_second * (1 / meters_per_block) * speed_scalar * rl.GetFrameTime();
         }
         if (rl.IsKeyPressed(rl.KEY_SLASH)) {
             editing_command_buffer = true; //TODO(caleb): Fix this jankness
             rgui.GuiEnable();
         }
 
-        if (player_velocity.y != 0 and playerWouldCollideWithBlock(&world, rl.Vector3{ .x = player_velocity.y, .y = 0, .z = 0 }, &player)) player_velocity.y = 0;
-        if (player_velocity.z != 0 and playerWouldCollideWithBlock(&world, rl.Vector3{ .x = 0, .y = player_velocity.z, .z = 0 }, &player)) player_velocity.z = 0;
-        if (player_velocity.x != 0 and playerWouldCollideWithBlock(&world, rl.Vector3{ .x = 0, .y = 0, .z = player_velocity.x }, &player)) player_velocity.x = 0;
+        player_velocity.z -= gravity_y_per_second * rl.GetFrameTime(); // TODO(caleb): Terminal velocity
+
+        if (playerWouldCollideWithBlock(&world, rl.Vector3{ .x = player_velocity.y + player_velocity_this_frame.y, .y = 0, .z = 0 }, &player)) {
+            player_velocity.y = 0;
+            player_velocity_this_frame.y = 0;
+        }
+        if (playerWouldCollideWithBlock(&world, rl.Vector3{ .x = 0, .y = player_velocity.z + player_velocity_this_frame.z, .z = 0 }, &player)) {
+            player_velocity.z = 0;
+            player_velocity_this_frame.z = 0;
+            player.in_air = false;
+        } else { // If the player isn't touching the ground they must be in the air.
+            player.in_air = true;
+        }
+
+        if (playerWouldCollideWithBlock(&world, rl.Vector3{ .x = 0, .y = 0, .z = player_velocity.x + player_velocity_this_frame.x }, &player)) {
+            player_velocity.x = 0;
+            player_velocity_this_frame.x = 0;
+        }
 
         rotateCamera(&camera, rl.Vector3{ .x = rl.GetMouseDelta().x * mouse_sens, .y = rl.GetMouseDelta().y * mouse_sens, .z = 0 }, !camera_in_first_person);
-        updatePositionAndTarget(&camera.position, &camera.target, camera.up, player_velocity);
+        updatePositionAndTarget(&camera.position, &camera.target, camera.up, rl.Vector3Add(player_velocity, player_velocity_this_frame));
 
         player.target = camera.target;
-        updatePositionAndTarget(&player.position, &player.target, player.up, player_velocity);
+        updatePositionAndTarget(&player.position, &player.target, player.up, rl.Vector3Add(player_velocity, player_velocity_this_frame));
 
         if (playerWouldCollideWithBlock(&world, rl.Vector3{ .x = 0, .y = 0, .z = 0 }, &player)) unreachable;
 
