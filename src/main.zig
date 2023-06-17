@@ -30,7 +30,6 @@ const hashString = std.hash_map.hashString;
 
 // TODO(caleb):
 // -----------------------------------------------------------------------------------
-// 3rd person camera
 // Gravity/Jump/player collision
 // Player collision volume
 // @Vector
@@ -176,12 +175,7 @@ fn updatePositionAndTarget(position: *rl.Vector3, target: *rl.Vector3, up: rl.Ve
     const move_in_world_space = true;
     moveForward(position, target, movment.x, move_in_world_space);
     moveRight(position, target, up, movment.y, move_in_world_space);
-
-    // std.debug.print("{d}\n", .{playerBoundingBox(position.*).min.y});
-
     moveUp(position, target, up, movment.z);
-
-    // std.debug.print("{d}\n", .{playerBoundingBox(position.*).min.y});
 }
 
 /// Updates bounding box positions to point p
@@ -334,8 +328,6 @@ pub fn main() !void {
         .up = rl.Vector3{ .x = 0, .y = 1, .z = 0 },
         .target = rl.Vector3{ .x = 8, .y = 8, .z = 7 },
     };
-    var player_bounding_box = playerBoundingBox(player.position);
-    var last_player_bounding_box: rl.BoundingBox = undefined;
 
     var camera_in_first_person = true;
     var camera: rl.Camera = undefined;
@@ -429,9 +421,6 @@ pub fn main() !void {
         updatePositionAndTarget(&player.position, &player.target, player.up, player_velocity);
 
         if (playerWouldCollideWithBlock(&world, rl.Vector3{ .x = 0, .y = 0, .z = 0 }, &player)) unreachable;
-
-        last_player_bounding_box = player_bounding_box;
-        player_bounding_box = playerBoundingBox(player.position);
 
         const player_chunk_coords = Vector3(i32){
             .x = @floatToInt(i32, @divFloor(player.position.x, @intToFloat(f32, Chunk.dim.x))),
@@ -538,8 +527,7 @@ pub fn main() !void {
             rl.DrawMesh(chunk_mesh.mesh, default_material, rl.MatrixIdentity());
 
         if (!camera_in_first_person) {
-            rl.DrawBoundingBox(player_bounding_box, rl.GREEN);
-            rl.DrawBoundingBox(last_player_bounding_box, rl.RED);
+            rl.DrawBoundingBox(playerBoundingBox(player.position), rl.GREEN);
             rl.DrawSphere(rl.Vector3Add(player.position, rl.Vector3{ .x = 0, .y = camera_offset_y, .z = 0 }), 0.03, rl.RED);
             rl.DrawLine3D(player.position, rl.Vector3Add(player.position, getForwardVector(player.position, player.target)), rl.RED);
         }
@@ -602,97 +590,4 @@ pub fn main() !void {
     try world.writeCachedChunksToDisk("./data/world.sav");
 
     rl.CloseWindow();
-}
-
-/// Draw cube textured
-fn drawCube(pos: rl.Vector3, width: f32, height: f32, length: f32, color: rl.Color) void {
-    _ = length;
-    const x = pos.x;
-    const y = pos.y;
-    const z = pos.z;
-    rl.rlBegin(rl.RL_QUADS);
-
-    // rlgl.SetTexture(top_texture.id);
-
-    // // Top Face
-    // rlgl.Normal3f(0.0, 1.0, 0.0); // Normal Pointing Up
-    // rlgl.TexCoord2f(0.0, 1.0);
-    // rlgl.Vertex3f(x, y + height, z); // Top Left Of The Texture and Quad
-    // rlgl.TexCoord2f(0.0, 0.0);
-    // rlgl.Vertex3f(x, y + height, z + length); // Bottom Left Of The Texture and Quad
-    // rlgl.TexCoord2f(1.0, 0.0);
-    // rlgl.Vertex3f(x + width, y + height, z + length); // Bottom Right Of The Texture and Quad
-    // rlgl.TexCoord2f(1.0, 1.0);
-    // rlgl.Vertex3f(x + width, y + height, z); // Top Right Of The Texture and Quad
-
-    // rlgl.SetTexture(not_top_texture.id);
-
-    // // Front Face
-    // rlgl.Normal3f(0.0, 0.0, 1.0); // Normal Pointing Towards Viewer
-    // rlgl.TexCoord2f(0.0, 0.0);
-    // rlgl.Vertex3f(x, y, z + length); // Bottom Left Of The Texture and Quad
-    // rlgl.TexCoord2f(1.0, 0.0);
-    // rlgl.Vertex3f(x + width, y, z + length); // Bottom Right Of The Texture and Quad
-    // rlgl.TexCoord2f(1.0, 1.0);
-    // rlgl.Vertex3f(x + width, y + height, z + length); // Top Right Of The Texture and Quad
-    // rlgl.TexCoord2f(0.0, 1.0);
-    // rlgl.Vertex3f(x, y + height, z + length); // Top Left Of The Texture and Quad
-
-    // Back Face
-    rl.rlNormal3f(0.0, 0.0, -1.0); // Normal Pointing Away From Viewer
-    //.rlgl.TexCoord2f(0.0, 0.0);
-
-    rl.rlColor4ub(color.r, color.g, color.b, color.a);
-    rl.rlVertex3f(x + width, y, z); // Bottom Left Of The Texture and Quad
-    //.rlgl.TexCoord2f(1.0, 0.0);
-
-    rl.rlNormal3f(0.0, 0.0, -1.0); // Normal Pointing Away From Viewer
-    rl.rlColor4ub(color.r, color.g, color.b, color.a);
-    rl.rlVertex3f(x, y, z); // Bottom Right Of The Texture and Quad
-    //.rlgl.TexCoord2f(1.0, 1.0);
-
-    rl.rlNormal3f(0.0, 0.0, -1.0); // Normal Pointing Away From Viewer
-    rl.rlColor4ub(color.r, color.g, color.b, color.a);
-    rl.rlVertex3f(x, y + height, z); // Top Right Of The Texture and Quad
-    //.rlgl.TexCoord2f(0.0, 1.0);
-
-    rl.rlNormal3f(0.0, 0.0, -1.0); // Normal Pointing Away From Viewer
-    rl.rlColor4ub(color.r, color.g, color.b, color.a);
-    rl.rlVertex3f(x + width, y + height, z); // Top Left Of The Texture and Quad
-
-    // // Bottom Face
-    // rlgl.Normal3f(0.0, -1.0, 0.0); // Normal Pointing Down
-    // rlgl.TexCoord2f(1.0, 1.0);
-    // rlgl.Vertex3f(x + width, y, z + length); // Top Right Of The Texture and Quad
-    // rlgl.TexCoord2f(0.0, 1.0);
-    // rlgl.Vertex3f(x, y, z + width); // Top Left Of The Texture and Quad
-    // rlgl.TexCoord2f(0.0, 0.0);
-    // rlgl.Vertex3f(x, y, z); // Bottom Left Of The Texture and Quad
-    // rlgl.TexCoord2f(1.0, 0.0);
-    // rlgl.Vertex3f(x + width, y, z); // Bottom Right Of The Texture and Quad
-
-    // // Right face
-    // rlgl.Normal3f(1.0, 0.0, 0.0); // Normal Pointing Right
-    // rlgl.TexCoord2f(1.0, 0.0);
-    // rlgl.Vertex3f(x + width, y, z); // Bottom Right Of The Texture and Quad
-    // rlgl.TexCoord2f(1.0, 1.0);
-    // rlgl.Vertex3f(x + width, y + height, z); // Top Right Of The Texture and Quad
-    // rlgl.TexCoord2f(0.0, 1.0);
-    // rlgl.Vertex3f(x + width, y + height, z + length); // Top Left Of The Texture and Quad
-    // rlgl.TexCoord2f(0.0, 0.0);
-    // rlgl.Vertex3f(x + width, y, z + length); // Bottom Left Of The Texture and Quad
-
-    // // Left Face
-    // rlgl.Normal3f(-1.0, 0.0, 0.0); // Normal Pointing Left
-    // rlgl.TexCoord2f(0.0, 0.0);
-    // rlgl.Vertex3f(x, y, z); // Bottom Left Of The Texture and Quad
-    // rlgl.TexCoord2f(1.0, 0.0);
-    // rlgl.Vertex3f(x, y, z + length); // Bottom Right Of The Texture and Quad
-    // rlgl.TexCoord2f(1.0, 1.0);
-    // rlgl.Vertex3f(x, y + height, z + length); // Top Right Of The Texture and Quad
-    // rlgl.TexCoord2f(0.0, 1.0);
-    // rlgl.Vertex3f(x, y + height, z); // Top Left Of The Texture and Quad
-
-    // rlgl.SetTexture(0);
-    rl.rlEnd();
 }
