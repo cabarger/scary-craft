@@ -25,11 +25,11 @@ const Vector3 = scary_types.Vector3;
 const hashString = std.hash_map.hashString;
 
 // FIXME(caleb):
-// Fix the renderer :(
+// Fix the renderer :( - glass
 
 // TODO(caleb):
 // -----------------------------------------------------------------------------------
-// @Vector
+// @Vector - inside of source files that aren't main.
 // NON JANK console
 
 // OBJECTIVES (possibly in the form of notes that you can pick up?)
@@ -60,9 +60,9 @@ const font_size = 20;
 const font_spacing = 2;
 
 const Player = struct {
-    position: rl.Vector3,
-    up: rl.Vector3,
-    target: rl.Vector3,
+    position: @Vector(3, f32),
+    up: @Vector(3, f32),
+    target: @Vector(3, f32),
     in_air: bool,
 };
 
@@ -98,13 +98,69 @@ const directions = [_]rl.Vector3{
     rl.Vector3{ .x = 0, .y = 0, .z = 1 }, // Backwrad
 };
 
+inline fn toRlVector3Ptr(v: *const @Vector(3, f32)) *const rl.Vector3 {
+    return @ptrCast(*const rl.Vector3, v);
+}
+
+inline fn toBuiltinVector3Ptr(a: *@Vector(3, f32), b: *const rl.Vector3) void {
+    a.*[0] = b.x;
+    a.*[1] = b.y;
+    a.*[2] = b.z;
+}
+
+inline fn vector3f32Scale(v: @Vector(3, f32), s: f32) @Vector(3, f32) {
+    return v * @splat(3, s);
+}
+
+inline fn vector3f32Cross(a: @Vector(3, f32), b: @Vector(3, f32)) @Vector(3, f32) {
+    return @Vector(3, f32){
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    };
+}
+
+inline fn vector3f32Normalize(v: @Vector(3, f32)) @Vector(3, f32) {
+    const len = @sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (len != 0)
+        return v * @splat(3, 1.0 / len);
+    return v;
+}
+
+fn DEBUGGetForwardVector(position: @Vector(3, f32), target: @Vector(3, f32)) @Vector(3, f32) {
+    return vector3f32Normalize(target - position);
+}
+
 fn getForwardVector(position: rl.Vector3, target: rl.Vector3) rl.Vector3 {
     return rl.Vector3Normalize(rl.Vector3Subtract(target, position));
+}
+
+fn DEBUGGetRightVector(position: @Vector(3, f32), target: @Vector(3, f32), up: @Vector(3, f32)) @Vector(3, f32) {
+    var forward = DEBUGGetForwardVector(position, target);
+    return vector3f32Cross(forward, vector3f32Normalize(up));
 }
 
 fn getRightVector(position: rl.Vector3, target: rl.Vector3, up: rl.Vector3) rl.Vector3 {
     var forward = getForwardVector(position, target);
     return rl.Vector3CrossProduct(forward, rl.Vector3Normalize(up));
+}
+
+/// Update's position and target on z axis by distance.
+fn DEBUGMoveForward(position: *@Vector(3, f32), target: *@Vector(3, f32), distance: f32, move_in_world_plane: bool) void {
+    var forward = DEBUGGetForwardVector(position.*, target.*);
+
+    if (move_in_world_plane) {
+        // Project vector onto world plane
+        forward[1] = 0;
+        forward = vector3f32Normalize(forward);
+    }
+
+    // Scale by distance
+    forward = vector3f32Scale(forward, distance);
+
+    // Move position and target
+    position.* += forward;
+    target.* += forward;
 }
 
 /// Update's position and target on z axis by distance.
@@ -125,6 +181,23 @@ fn moveForward(position: *rl.Vector3, target: *rl.Vector3, distance: f32, move_i
     target.* = rl.Vector3Add(target.*, forward);
 }
 
+fn DEBUGMoveRight(position: *@Vector(3, f32), target: *@Vector(3, f32), up: @Vector(3, f32), distance: f32, move_in_world_plane: bool) void {
+    var right = DEBUGGetRightVector(position.*, target.*, up);
+
+    if (move_in_world_plane) {
+        // Project vector onto world plane
+        right[1] = 0;
+        right = vector3f32Normalize(right);
+    }
+
+    // Scale by distance
+    right = vector3f32Scale(right, distance);
+
+    // Move position and target
+    position.* += right;
+    target.* += right;
+}
+
 /// Update's position and target on x axis by distance.
 fn moveRight(position: *rl.Vector3, target: *rl.Vector3, up: rl.Vector3, distance: f32, move_in_world_plane: bool) void {
     var right = getRightVector(position.*, target.*, up);
@@ -141,6 +214,16 @@ fn moveRight(position: *rl.Vector3, target: *rl.Vector3, up: rl.Vector3, distanc
     // Move position and target
     position.* = rl.Vector3Add(position.*, right);
     target.* = rl.Vector3Add(target.*, right);
+}
+
+/// Update's position and target on y axis by distance.
+fn DEBUGMoveUp(position: *@Vector(3, f32), target: *@Vector(3, f32), up: @Vector(3, f32), distance: f32) void {
+    // Scale by distance
+    var scaled_up = vector3f32Scale(vector3f32Normalize(up), distance);
+
+    // Move position and target
+    position.* += scaled_up;
+    target.* += scaled_up;
 }
 
 /// Update's position and target on y axis by distance.
@@ -172,6 +255,13 @@ fn rotateCamera(camera: *rl.Camera, rotation: rl.Vector3, rotate_around_target: 
     rl.CameraRoll(camera, rotation.z * rl.DEG2RAD);
 }
 
+fn DEBUGUpdatePositionAndTarget(position: *@Vector(3, f32), target: *@Vector(3, f32), up: @Vector(3, f32), movment: rl.Vector3) void {
+    const move_in_world_space = true;
+    DEBUGMoveForward(position, target, movment.x, move_in_world_space);
+    DEBUGMoveRight(position, target, up, movment.y, move_in_world_space);
+    DEBUGMoveUp(position, target, up, movment.z);
+}
+
 fn updatePositionAndTarget(position: *rl.Vector3, target: *rl.Vector3, up: rl.Vector3, movment: rl.Vector3) void {
     const move_in_world_space = true;
     moveForward(position, target, movment.x, move_in_world_space);
@@ -180,11 +270,11 @@ fn updatePositionAndTarget(position: *rl.Vector3, target: *rl.Vector3, up: rl.Ve
 }
 
 /// Updates bounding box positions to point p
-fn playerBoundingBox(p: rl.Vector3) rl.BoundingBox {
+fn playerBoundingBox(p: @Vector(3, f32)) rl.BoundingBox {
     var bb: rl.BoundingBox = undefined;
-    bb.min.x = p.x - player_width * 0.5;
-    bb.min.y = p.y - player_height * 0.5;
-    bb.min.z = p.z - player_length * 0.5;
+    bb.min.x = p[0] - player_width * 0.5;
+    bb.min.y = p[1] - player_height * 0.5;
+    bb.min.z = p[2] - player_length * 0.5;
     bb.max.x = bb.min.x + player_width;
     bb.max.y = bb.min.y + player_height;
     bb.max.z = bb.min.z + player_length;
@@ -239,24 +329,21 @@ inline fn lookDirection(direction: rl.Vector3) Direction {
 }
 
 fn playerWouldCollideWithBlock(world: *World, velocity: rl.Vector3, player: *Player) bool {
-    var right = getRightVector(player.position, player.target, player.up);
-    right.y = 0;
-    right = rl.Vector3Normalize(right);
-    right = rl.Vector3Scale(right, velocity.x);
+    var right = DEBUGGetRightVector(player.position, player.target, player.up);
+    right[1] = 0;
+    right = vector3f32Scale(vector3f32Normalize(right), velocity.x);
 
-    var up = rl.Vector3Normalize(player.up);
-    up = rl.Vector3Scale(up, velocity.y);
+    const up = vector3f32Scale(vector3f32Normalize(player.up), velocity.y);
 
-    var forward = getForwardVector(player.position, player.target);
-    forward.y = 0;
-    forward = rl.Vector3Normalize(forward);
-    forward = rl.Vector3Scale(forward, velocity.z);
+    var forward = DEBUGGetForwardVector(player.position, player.target);
+    forward[1] = 0;
+    forward = vector3f32Scale(vector3f32Normalize(forward), velocity.z);
 
     var next_player_position = player.position;
 
-    next_player_position = rl.Vector3Add(next_player_position, right);
-    next_player_position = rl.Vector3Add(next_player_position, up);
-    next_player_position = rl.Vector3Add(next_player_position, forward);
+    next_player_position = next_player_position + right;
+    next_player_position = next_player_position + up;
+    next_player_position = next_player_position + forward;
 
     const aabb = playerBoundingBox(next_player_position);
     var world_block_min = World.worldf32ToWorldi32(aabb.min);
@@ -325,17 +412,17 @@ pub fn main() !void {
     var debug_text_info = false;
 
     var player = Player{
-        .position = rl.Vector3{ .x = 8, .y = 8, .z = 8 },
-        .up = rl.Vector3{ .x = 0, .y = 1, .z = 0 },
-        .target = rl.Vector3{ .x = 8, .y = 8, .z = 7 },
+        .position = @Vector(3, f32){ 8.0, 8.0, 8.0 },
+        .up = @Vector(3, f32){ 0.0, 1.0, 0.0 },
+        .target = @Vector(3, f32){ 8.0, 8.0, 7.0 },
         .in_air = false,
     };
 
     var camera_in_first_person = true;
     var camera: rl.Camera = undefined;
-    camera.position = rl.Vector3Add(player.position, rl.Vector3{ .x = 0, .y = camera_offset_y, .z = 0 });
-    camera.target = player.target;
-    camera.up = player.up;
+    camera.position = toRlVector3Ptr(&(player.position + @Vector(3, f32){ 0.0, camera_offset_y, 0.0 })).*;
+    camera.target = toRlVector3Ptr(&player.target).*;
+    camera.up = toRlVector3Ptr(&player.up).*;
     camera.fovy = fovy;
     camera.projection = rl.CAMERA_PERSPECTIVE;
 
@@ -375,11 +462,11 @@ pub fn main() !void {
 
         if (rl.IsKeyPressed(rl.KEY_F5)) {
             if (camera_in_first_person) { // Switching to third person
-                camera.position = rl.Vector3Add(player.position, rl.Vector3{ .x = 0, .y = 5, .z = 5 });
-                camera.target = player.position;
+                camera.position = toRlVector3Ptr(&(player.position + @Vector(3, f32){ 0.0, 5.0, 5.0 })).*;
+                camera.target = toRlVector3Ptr(&player.position).*;
             } else {
-                camera.position = rl.Vector3Add(player.position, rl.Vector3{ .x = 0, .y = camera_offset_y, .z = 0 });
-                camera.target = player.target;
+                camera.position = toRlVector3Ptr(&(player.position + @Vector(3, f32){ 0.0, camera_offset_y, 0.0 })).*;
+                camera.target = toRlVector3Ptr(&player.target).*;
             }
             camera_in_first_person = !camera_in_first_person;
         }
@@ -437,23 +524,23 @@ pub fn main() !void {
         rotateCamera(&camera, rl.Vector3{ .x = rl.GetMouseDelta().x * mouse_sens, .y = rl.GetMouseDelta().y * mouse_sens, .z = 0 }, !camera_in_first_person);
         updatePositionAndTarget(&camera.position, &camera.target, camera.up, rl.Vector3Add(player_velocity, player_velocity_this_frame));
 
-        player.target = camera.target;
-        updatePositionAndTarget(&player.position, &player.target, player.up, rl.Vector3Add(player_velocity, player_velocity_this_frame));
+        toBuiltinVector3Ptr(&player.target, &camera.target);
+        DEBUGUpdatePositionAndTarget(&player.position, &player.target, player.up, rl.Vector3Add(player_velocity, player_velocity_this_frame));
 
         if (playerWouldCollideWithBlock(&world, rl.Vector3{ .x = 0, .y = 0, .z = 0 }, &player)) unreachable;
 
         const player_chunk_coords = Vector3(i32){
-            .x = @floatToInt(i32, @divFloor(player.position.x, @intToFloat(f32, Chunk.dim.x))),
-            .y = @floatToInt(i32, @divFloor(player.position.y, @intToFloat(f32, Chunk.dim.y))),
-            .z = @floatToInt(i32, @divFloor(player.position.z, @intToFloat(f32, Chunk.dim.z))),
+            .x = @floatToInt(i32, @divFloor(player.position[0], @intToFloat(f32, Chunk.dim.x))),
+            .y = @floatToInt(i32, @divFloor(player.position[1], @intToFloat(f32, Chunk.dim.y))),
+            .z = @floatToInt(i32, @divFloor(player.position[2], @intToFloat(f32, Chunk.dim.z))),
         };
         const last_player_chunk_coords = Vector3(i32){
-            .x = @floatToInt(i32, @divFloor(last_player_position.x, @intToFloat(f32, Chunk.dim.x))),
-            .y = @floatToInt(i32, @divFloor(last_player_position.y, @intToFloat(f32, Chunk.dim.y))),
-            .z = @floatToInt(i32, @divFloor(last_player_position.z, @intToFloat(f32, Chunk.dim.z))),
+            .x = @floatToInt(i32, @divFloor(last_player_position[0], @intToFloat(f32, Chunk.dim.x))),
+            .y = @floatToInt(i32, @divFloor(last_player_position[1], @intToFloat(f32, Chunk.dim.y))),
+            .z = @floatToInt(i32, @divFloor(last_player_position[2], @intToFloat(f32, Chunk.dim.z))),
         };
         if (!last_player_chunk_coords.equals(player_chunk_coords)) {
-            try world.loadChunks(player.position);
+            try world.loadChunks(toRlVector3Ptr(&player.position).*);
             mesher.updateChunkMeshesSpatially(&mesh_pool, &chunk_meshes, &world, &atlas);
         }
         last_player_position = player.position;
@@ -548,8 +635,8 @@ pub fn main() !void {
 
         if (!camera_in_first_person) {
             rl.DrawBoundingBox(playerBoundingBox(player.position), rl.GREEN);
-            rl.DrawSphere(rl.Vector3Add(player.position, rl.Vector3{ .x = 0, .y = camera_offset_y, .z = 0 }), 0.03, rl.RED);
-            rl.DrawLine3D(player.position, rl.Vector3Add(player.position, getForwardVector(player.position, player.target)), rl.RED);
+            rl.DrawSphere(toRlVector3Ptr(&(player.position + @Vector(3, f32){ 0.0, camera_offset_y, 0.0 })).*, 0.03, rl.RED);
+            rl.DrawLine3D(toRlVector3Ptr(&player.position).*, toRlVector3Ptr(&(player.position + DEBUGGetForwardVector(player.position, player.target))).*, rl.RED);
         }
 
         rl.EndMode3D();
@@ -577,7 +664,7 @@ pub fn main() !void {
             rl.DrawTextEx(font, @ptrCast([*c]const u8, fps_strz), rl.Vector2{ .x = 0, .y = 0 }, font_size, font_spacing, rl.WHITE);
             y_offset += rl.MeasureTextEx(font, @ptrCast([*c]const u8, fps_strz), font_size, font_spacing).y;
 
-            const player_pos_strz = try std.fmt.bufPrintZ(&strz_buffer, "Player position: (x:{d:.2}, y:{d:.2}, z:{d:.2})", .{ player.position.x, player.position.y, player.position.z });
+            const player_pos_strz = try std.fmt.bufPrintZ(&strz_buffer, "Player position: (x:{d:.2}, y:{d:.2}, z:{d:.2})", .{ player.position[0], player.position[1], player.position[2] });
             rl.DrawTextEx(font, @ptrCast([*c]const u8, player_pos_strz), rl.Vector2{ .x = 0, .y = y_offset }, font_size, font_spacing, rl.WHITE);
             y_offset += rl.MeasureTextEx(font, @ptrCast([*c]const u8, player_pos_strz), font_size, font_spacing).y;
 
@@ -603,7 +690,6 @@ pub fn main() !void {
             // y_offset += rl.MeasureTextEx(font, @ptrCast([*c]const u8, look_direction_strz), font_size, font_spacing);
 
         }
-
         rl.EndDrawing();
     }
 
