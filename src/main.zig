@@ -27,13 +27,11 @@ const Vector3f32 = @Vector(3, f32);
 // Fix the renderer :( - glass
 
 // TODO(caleb):
-// Chunk borders
-// Don't allow the player to place a block if the block would end up inside of the player.
 // @Vector - inside of source files that aren't main.
-// NON JANK console
 // OBJECTIVES (possibly in the form of notes that you can pick up?)
 // INSERT SCARY ENEMY IDEAS HERE...
 // Frustum culling ( do this when game gets slow? )
+// NON JANK console
 
 // Constants -------------------------------------------------------------------------
 const meters_per_block = 1.0;
@@ -452,8 +450,11 @@ pub fn main() !void {
             editing_command_buffer = true; //TODO(caleb): Fix this jankness
             rgui.GuiEnable();
         }
-        if (!god_mode)
+        if (!god_mode) {
             player_velocity -= Vector3f32{ 0, gravity_y_per_second * rl.GetFrameTime(), 0 }; // TODO(caleb): Terminal velocity
+        } else { // Remove any y velocity from previous frames.
+            player_velocity[1] = 0;
+        }
 
         if (playerWouldCollideWithBlock(&world, (player_velocity + player_velocity_this_frame) * Vector3f32{ 1, 0, 0 }, &player)) {
             player_velocity *= Vector3f32{ 0, 1, 1 };
@@ -553,6 +554,7 @@ pub fn main() !void {
                 const wrapped_y: Chunk.u_dimy = if (d_target_block_coords.y >= 0) @intCast(Chunk.u_dimy, target_block.coords.y) +% @floatToInt(Chunk.u_dimy, d_target_block_coords.y) else @intCast(Chunk.u_dimy, target_block.coords.y) -% 1;
                 const wrapped_z: Chunk.u_dimz = if (d_target_block_coords.z >= 0) @intCast(Chunk.u_dimz, target_block.coords.z) +% @floatToInt(Chunk.u_dimz, d_target_block_coords.z) else @intCast(Chunk.u_dimz, target_block.coords.z) -% 1;
 
+                // Place block in world
                 world.loaded_chunks[border_or_same_chunk_index].put(
                     held_block_id,
                     @intCast(u8, wrapped_x),
@@ -560,14 +562,24 @@ pub fn main() !void {
                     @intCast(u8, wrapped_z),
                 );
 
-                var mesh_index: usize = 0;
-                for (chunk_meshes) |mesh| {
-                    if (mesh.coords.equals(world.loaded_chunks[border_or_same_chunk_index].coords)) break;
-                    mesh_index += 1;
-                }
+                // If player is trying to place block inside of own hitbox don't place the block.
+                if (playerWouldCollideWithBlock(&world, Vector3f32{ 0, 0, 0 }, &player)) {
+                    world.loaded_chunks[border_or_same_chunk_index].put(
+                        0,
+                        @intCast(u8, wrapped_x),
+                        @intCast(u8, wrapped_y),
+                        @intCast(u8, wrapped_z),
+                    );
+                } else { // Update mesh since this block isn't inside the player.
+                    var mesh_index: usize = 0;
+                    for (chunk_meshes) |mesh| {
+                        if (mesh.coords.equals(world.loaded_chunks[border_or_same_chunk_index].coords)) break;
+                        mesh_index += 1;
+                    }
 
-                chunk_meshes[mesh_index].updated_block_pos = Vector3(u8){ .x = @intCast(u8, wrapped_x), .y = @intCast(u8, wrapped_y), .z = @intCast(u8, wrapped_z) };
-                mesher.updateChunkMeshes(&mesh_pool, &chunk_meshes, mesh_index, &world, &atlas);
+                    chunk_meshes[mesh_index].updated_block_pos = Vector3(u8){ .x = @intCast(u8, wrapped_x), .y = @intCast(u8, wrapped_y), .z = @intCast(u8, wrapped_z) };
+                    mesher.updateChunkMeshes(&mesh_pool, &chunk_meshes, mesh_index, &world, &atlas);
+                }
             }
         }
 

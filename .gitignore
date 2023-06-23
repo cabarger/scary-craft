@@ -1,3 +1,4 @@
 dev-assets
 zig-cache
 zig-out
+data/*.sav
