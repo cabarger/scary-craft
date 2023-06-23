@@ -18,35 +18,24 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const FixedBufferAllocator = std.heap.FixedBufferAllocator;
 const MemoryPoolExtra = std.heap.MemoryPoolExtra;
-
-const SmolQ = scary_types.SmolQ;
-const BST = scary_types.BST;
 const Vector3 = scary_types.Vector3;
 const VectorOps = lag.VectorOps;
-
 const Vector3f32Ops = VectorOps(3, f32);
-// const Vector3i32 = VectorOps(3, i32);
-
 const Vector3f32 = @Vector(3, f32);
-
-const hashString = std.hash_map.hashString;
 
 // FIXME(caleb):
 // Fix the renderer :( - glass
 
 // TODO(caleb):
-// -----------------------------------------------------------------------------------
-// Write rotate y,z for player's position and target vectors
 // Chunk borders
 // Don't allow the player to place a block if the block would end up inside of the player.
 // @Vector - inside of source files that aren't main.
 // NON JANK console
-
 // OBJECTIVES (possibly in the form of notes that you can pick up?)
 // INSERT SCARY ENEMY IDEAS HERE...
-
 // Frustum culling ( do this when game gets slow? )
 
+// Constants -------------------------------------------------------------------------
 const meters_per_block = 1.0;
 
 const crosshair_thickness_in_pixels = 2;
@@ -69,6 +58,7 @@ const mouse_sens = 0.1;
 const font_size = 20;
 const font_spacing = 2;
 
+// One off main structs -------------------------------------------------------------------------
 const Player = struct {
     position: Vector3f32,
     up: Vector3f32,
@@ -76,7 +66,7 @@ const Player = struct {
     in_air: bool,
 };
 
-const Light = struct {
+const ShaderLight = struct {
     enabled: c_int,
     type: c_int,
     position: [3]f32,
@@ -230,7 +220,7 @@ fn rotateCamera(camera: *rl.Camera, rotation: rl.Vector3, rotate_around_target: 
         -rotation.x * rl.DEG2RAD,
         rotate_around_target,
     );
-    rl.CameraRoll(camera, rotation.z * rl.DEG2RAD);
+    // rl.CameraRoll(camera, rotation.z * rl.DEG2RAD);
 }
 
 fn updatePositionAndTargetRl(position: *rl.Vector3, target: *rl.Vector3, up: rl.Vector3, movement: Vector3f32) void {
@@ -260,7 +250,7 @@ fn playerBoundingBox(p: Vector3f32) rl.BoundingBox {
     return bb;
 }
 
-fn updateLightValues(shader: rl.Shader, light: *Light) void {
+fn updateShaderLightValues(shader: rl.Shader, light: *ShaderLight) void {
 
     // Send to shader light enabled state and type
     rl.SetShaderValue(shader, light.enabled_loc, &light.enabled, rl.SHADER_UNIFORM_INT);
@@ -329,6 +319,7 @@ fn playerWouldCollideWithBlock(world: *World, velocity_: Vector3f32, player: *Pl
 }
 
 pub fn main() !void {
+    // Rayib init -------------------------------------------------------------------------
     const screen_width: c_int = 1920;
     const screen_height: c_int = 1080;
     rl.InitWindow(screen_width, screen_height, "Scary Craft :o");
@@ -337,26 +328,26 @@ pub fn main() !void {
     rl.SetTargetFPS(target_fps);
     rl.DisableCursor();
 
+    const font = rl.LoadFont("data/FiraCode-Medium.ttf");
+
+    // Arena init -------------------------------------------------------------------------
     var back_buffer = try std.heap.page_allocator.alloc(u8, 1024 * 1024 * 5); // 5mb
     var fb_instance = std.heap.FixedBufferAllocator.init(back_buffer);
     var arena_instance = std.heap.ArenaAllocator.init(fb_instance.allocator());
-    var arena_ally = arena_instance.allocator();
+    var arena = arena_instance.allocator();
 
-    const font = rl.LoadFont("data/FiraCode-Medium.ttf");
-
-    rgui.GuiLoadStyle("raygui/styles/dark/dark.rgs");
-    rgui.GuiDisable();
-
-    var atlas = Atlas.init(arena_ally);
+    // Load texture atlas
+    var atlas = Atlas.init(arena);
     try atlas.load("data/atlas.png", "data/atlas_data.json");
 
+    // Lighting shader init -------------------------------------------------------------------------
     var shader: rl.Shader = rl.LoadShader(rl.TextFormat("data/shaders/lighting.vs", @intCast(c_int, 330)), rl.TextFormat("data/shaders/lighting.fs", @intCast(c_int, 330)));
     shader.locs[rl.SHADER_LOC_VECTOR_VIEW] = rl.GetShaderLocation(shader, "viewPos");
 
     const ambient_loc = rl.GetShaderLocation(shader, "ambient");
     rl.SetShaderValue(shader, ambient_loc, &[_]f32{ 0.01, 0.01, 0.01, 1.0 }, rl.SHADER_UNIFORM_VEC4);
 
-    var light_source: Light = undefined;
+    var light_source: ShaderLight = undefined;
     light_source.enabled_loc = rl.GetShaderLocation(shader, "light.enabled");
     light_source.type_loc = rl.GetShaderLocation(shader, "light.type");
     light_source.position_loc = rl.GetShaderLocation(shader, "light.position");
@@ -368,6 +359,7 @@ pub fn main() !void {
     default_material.shader = shader;
     rl.SetMaterialTexture(&default_material, rl.MATERIAL_MAP_DIFFUSE, atlas.texture);
 
+    // Game vars -------------------------------------------------------------------------
     var debug_axes = false;
     var debug_text_info = false;
 
@@ -378,7 +370,7 @@ pub fn main() !void {
         .in_air = false,
     };
 
-    var god_mode = false; // Currently controls if player is allowed to fly or not.
+    var god_mode = false; // Toggles player flight
     var camera_in_first_person = true;
 
     var camera: rl.Camera = undefined;
@@ -391,25 +383,26 @@ pub fn main() !void {
     var last_player_position = player.position;
     var player_velocity = Vector3f32{ 0, 0, 0 };
 
+    var command_buffer: [128]u8 = undefined;
+    var editing_command_buffer = false;
+    var empty_str = try std.fmt.bufPrintZ(&command_buffer, "", .{});
+    var held_block_id = atlas.nameToId("default_grass") orelse unreachable;
+
+    // Initial chunk loading -------------------------------------------------------------------------
     try World.writeDummySave("data/world.sav", &atlas);
-    var world = World.init(arena_ally);
+    var world = World.init(arena);
     try world.loadSave("data/world.sav");
     try world.loadChunks(camera.position);
 
-    var mesh_pool = try MemoryPoolExtra([mesher.mem_per_chunk]u8, .{ .alignment = null, .growable = false }).initPreheated(arena_ally, World.loaded_chunk_capacity);
+    var mesh_pool = try MemoryPoolExtra([mesher.mem_per_chunk]u8, .{ .alignment = null, .growable = false }).initPreheated(arena, World.loaded_chunk_capacity);
     var chunk_meshes: [World.loaded_chunk_capacity]mesher.ChunkMesh = undefined;
     for (&chunk_meshes, 0..) |*chunk_mesh, chunk_index| {
         chunk_mesh.* = mesher.cullMesh(&mesh_pool, @intCast(u8, chunk_index), &world, &atlas) catch unreachable;
         rl.UploadMesh(&chunk_mesh.mesh, false);
     }
 
-    var command_buffer: [128]u8 = undefined;
-    var editing_command_buffer = false;
-    var empty_str = try std.fmt.bufPrintZ(&command_buffer, "", .{});
-
-    var held_block_id = atlas.name_to_id.get(hashString("default_grass")) orelse unreachable;
-
-    while (!rl.WindowShouldClose()) {
+    while (!rl.WindowShouldClose()) { // Game loop
+        // Update -------------------------------------------------------------------------
         const screen_dim = rl.Vector2{ .x = @intToFloat(f32, rl.GetScreenWidth()), .y = @intToFloat(f32, rl.GetScreenHeight()) };
         const screen_mid = rl.Vector2Scale(screen_dim, 0.5);
         const aspect = screen_dim.x / screen_dim.y;
@@ -485,7 +478,6 @@ pub fn main() !void {
             rotateX(&player.position, &player.target, &player.up, rl.GetMouseDelta().y * mouse_sens * rl.DEG2RAD, true, false, false);
             rotateY(&player.position, &player.target, player.up, -rl.GetMouseDelta().x * mouse_sens * rl.DEG2RAD, false);
         }
-
         updatePositionAndTarget(&player.position, &player.target, player.up, player_velocity + player_velocity_this_frame);
 
         if (playerWouldCollideWithBlock(&world, Vector3f32{ 0, 0, 0 }, &player)) unreachable;
@@ -508,12 +500,10 @@ pub fn main() !void {
         last_player_position = player.position;
 
         // Update uniform shader values.
-        const camera_position = Vector3f32{ camera.position.x, camera.position.y, camera.position.z };
-        const camera_target = Vector3f32{ camera.target.x, camera.target.y, camera.target.z };
-        light_source.position = camera_position;
-        light_source.target = camera_target;
-        updateLightValues(shader, &light_source);
-        rl.SetShaderValue(shader, shader.locs[rl.SHADER_LOC_VECTOR_VIEW], &camera_position, rl.SHADER_UNIFORM_VEC3);
+        light_source.position = player.position;
+        light_source.target = player.target;
+        updateShaderLightValues(shader, &light_source);
+        rl.SetShaderValue(shader, shader.locs[rl.SHADER_LOC_VECTOR_VIEW], &player.position, rl.SHADER_UNIFORM_VEC3);
 
         var collision_chunk_index: usize = undefined;
         const crosshair_ray = rl.Ray{ .position = camera.position, .direction = rl.GetCameraForward(&camera) };
@@ -579,10 +569,10 @@ pub fn main() !void {
             }
         }
 
+        // Drawing happens here  -------------------------------------------------------------------------
         rl.BeginDrawing();
         rl.ClearBackground(rl.BLACK);
         rl.BeginMode3D(camera);
-
         // const frustum = Frustum.extractFrustum(&camera, aspect);
         // var chunk_box = AABB{ .min = rl.Vector3Zero(), .max = rl.Vector3Add(rl.Vector3Zero(), rl.Vector3{ .x = @intToFloat(f32, Chunk.dim.x), .y = @intToFloat(f32, Chunk.dim.x), .z = @intToFloat(f32, Chunk.dim.x) }) };
 
@@ -600,25 +590,27 @@ pub fn main() !void {
             rl.DrawSphere(@bitCast(rl.Vector3, player.position + Vector3f32{ 0.0, camera_offset_y, 0.0 }), 0.03, rl.RED);
             rl.DrawLine3D(@bitCast(rl.Vector3, player.position), @bitCast(rl.Vector3, player.position + Vector3f32Ops.forward(player.position, player.target)), rl.RED);
         }
-
         rl.EndMode3D();
 
+        // Draw crosshair
         rl.DrawLineEx(screen_mid, rl.Vector2Add(screen_mid, rl.Vector2{ .x = -crosshair_length_in_pixels, .y = 0 }), crosshair_thickness_in_pixels, rl.WHITE);
         rl.DrawLineEx(screen_mid, rl.Vector2Add(screen_mid, rl.Vector2{ .x = crosshair_length_in_pixels, .y = 0 }), crosshair_thickness_in_pixels, rl.WHITE);
         rl.DrawLineEx(screen_mid, rl.Vector2Add(screen_mid, rl.Vector2{ .x = 0, .y = -crosshair_length_in_pixels }), crosshair_thickness_in_pixels, rl.WHITE);
         rl.DrawLineEx(screen_mid, rl.Vector2Add(screen_mid, rl.Vector2{ .x = 0, .y = crosshair_length_in_pixels }), crosshair_thickness_in_pixels, rl.WHITE);
 
+        // Draw command text box
         if (editing_command_buffer) {
             const tbox_rect = rgui.Rectangle{ .x = 0, .y = screen_dim.y - 25, .width = screen_dim.x / 3, .height = 25 };
             if (rgui.GuiTextBox(tbox_rect, empty_str, command_buffer.len, editing_command_buffer) == 1) {
                 const bytes_written = std.zig.c_builtins.__builtin_strlen(&command_buffer);
-                held_block_id = atlas.name_to_id.get(hashString(command_buffer[1..bytes_written])) orelse held_block_id;
+                held_block_id = atlas.nameToId(command_buffer[1..bytes_written]) orelse held_block_id;
                 for (0..bytes_written) |byte_index| command_buffer[byte_index] = 0;
                 editing_command_buffer = false;
                 rgui.GuiDisable();
             }
         }
 
+        // Overlay a bunch of useful debugging info
         if (debug_text_info) {
             var strz_buffer: [256]u8 = undefined;
             var y_offset: f32 = 0;
@@ -655,7 +647,6 @@ pub fn main() !void {
         rl.EndDrawing();
     }
 
-    try world.writeCachedChunksToDisk("./data/world.sav");
-
+    try world.writeCachedChunksToDisk("./data/world.sav"); // Save the world
     rl.CloseWindow();
 }
