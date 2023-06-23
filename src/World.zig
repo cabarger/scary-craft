@@ -7,7 +7,6 @@ const Chunk = @import("Chunk.zig");
 const SmolQ = scary_types.SmolQ;
 const BST = scary_types.BST;
 const BSTExtra = scary_types.BSTExtra;
-const Vector3 = scary_types.Vector3;
 const AutoHashMap = std.AutoHashMap;
 
 const hashString = std.hash_map.hashString;
@@ -23,7 +22,7 @@ pub const WorldSaveHeader = packed struct {
 
 pub const ChunkHandle = packed struct {
     index: u32,
-    coords: Vector3(i32),
+    coords: @Vector(3, i32),
 };
 
 ally: std.mem.Allocator,
@@ -40,9 +39,9 @@ pub fn init(ally: std.mem.Allocator) Self {
     return result;
 }
 
-pub fn chunkIndexFromCoords(self: *Self, coords: Vector3(i32)) ?usize {
+pub fn chunkIndexFromCoords(self: *Self, coords: @Vector(3, i32)) ?usize {
     for (self.loaded_chunks, 0..) |chunk, chunk_index| {
-        if (chunk.coords.equals(coords))
+        if (@reduce(.And, chunk.coords == coords))
             return chunk_index;
     }
     return null;
@@ -63,7 +62,7 @@ pub fn writeCachedChunksToDisk(self: *Self, save_path: []const u8) !void {
             try world_save_writer.writeStruct(save_header);
             break :ablk ChunkHandle{ .index = save_header.chunk_count, .coords = chunk.coords };
         };
-        try world_save_reader.skipBytes((@sizeOf(ChunkHandle) + @intCast(u32, Chunk.dim.x) * @intCast(u32, Chunk.dim.y) * @intCast(i32, Chunk.dim.z)) * (world_chunk_handle.index - 1), .{});
+        try world_save_reader.skipBytes((@sizeOf(ChunkHandle) + @intCast(u32, Chunk.dim) * @intCast(u32, Chunk.dim) * @intCast(i32, Chunk.dim)) * (world_chunk_handle.index - 1), .{});
         try world_save_writer.writeStruct(ChunkHandle{ .index = world_chunk_handle.index, .coords = world_chunk_handle.coords });
         try world_save_writer.writeAll(&chunk.block_data);
     }
@@ -77,14 +76,14 @@ pub fn writeDummySave(world_save_path: []const u8, atlas: *Atlas) !void {
 
     // Create a chunk slice 16x16 at y = 0;
     var test_chunk: Chunk = undefined;
-    test_chunk.coords = Vector3(i32){ .x = 0, .y = 0, .z = 0 };
+    test_chunk.coords = @Vector(3, i32){ 0, 0, 0 };
     test_chunk.index = 1;
     for (&test_chunk.block_data) |*byte| byte.* = 0;
 
     var block_z: u8 = 0;
-    while (block_z < Chunk.dim.z) : (block_z += 1) {
+    while (block_z < Chunk.dim) : (block_z += 1) {
         var block_x: u8 = 0;
-        while (block_x < Chunk.dim.x) : (block_x += 1)
+        while (block_x < Chunk.dim) : (block_x += 1)
             test_chunk.put(atlas.name_to_id.get(hashString("default_grass")) orelse unreachable, block_x, 0, block_z);
     }
 
@@ -101,7 +100,7 @@ pub fn loadSave(world: *Self, world_save_path: []const u8) !void {
     const world_save_header = try save_file_reader.readStruct(WorldSaveHeader);
     for (0..world_save_header.chunk_count) |_| {
         const world_save_chunk = try save_file_reader.readStruct(ChunkHandle);
-        try save_file_reader.skipBytes(@intCast(u32, Chunk.dim.x) * @intCast(u32, Chunk.dim.y) * @intCast(i32, Chunk.dim.z), .{});
+        try save_file_reader.skipBytes(@intCast(u32, Chunk.dim) * @intCast(u32, Chunk.dim) * @intCast(i32, Chunk.dim), .{});
         try world.world_chunk_st.insert(world_save_chunk);
     }
 }
@@ -111,89 +110,77 @@ pub fn loadSave(world: *Self, world_save_path: []const u8) !void {
 // chunk - chunk coords
 // rel - chunk relative coords
 
-pub inline fn worldi32ToRel(pos: Vector3(i32)) Vector3(u8) {
-    var result: Vector3(u8) = undefined;
-    result.x = @intCast(u8, @mod(pos.x, @intCast(i32, Chunk.dim.x)));
-    result.y = @intCast(u8, @mod(pos.y, @intCast(i32, Chunk.dim.y)));
-    result.z = @intCast(u8, @mod(pos.z, @intCast(i32, Chunk.dim.z)));
-    return result;
+pub inline fn worldi32ToRel(pos: @Vector(3, i32)) @Vector(3, u8) {
+    return @Vector(3, u8){
+        @intCast(u8, @mod(pos[0], @intCast(i32, Chunk.dim))),
+        @intCast(u8, @mod(pos[1], @intCast(i32, Chunk.dim))),
+        @intCast(u8, @mod(pos[2], @intCast(i32, Chunk.dim))),
+    };
 }
 
-pub inline fn worldf32ToWorldi32(pos: rl.Vector3) Vector3(i32) {
-    var result: Vector3(i32) = undefined;
-    result.x = @floatToInt(i32, @floor(pos.x));
-    result.y = @floatToInt(i32, @floor(pos.y));
-    result.z = @floatToInt(i32, @floor(pos.z));
-    return result;
+pub inline fn worldf32ToWorldi32(pos: rl.Vector3) @Vector(3, i32) {
+    return @Vector(3, i32){
+        @floatToInt(i32, @floor(pos.x)),
+        @floatToInt(i32, @floor(pos.y)),
+        @floatToInt(i32, @floor(pos.z)),
+    };
 }
 
-pub inline fn worldf32ToRel(pos: rl.Vector3) Vector3(u8) {
-    var result = std.mem.zeroInit(Vector3(u8), .{});
-    result.x = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.x)), @intCast(i32, Chunk.dim.x)));
-    result.y = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.y)), @intCast(i32, Chunk.dim.y)));
-    result.z = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.z)), @intCast(i32, Chunk.dim.z)));
-    return result;
-}
-
-pub inline fn worldf32ToChunkRel(pos: rl.Vector3) Vector3(u8) {
-    var result = std.mem.zeroInit(Vector3(u8), .{});
-    result.x = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.x)), @intCast(i32, Chunk.dim.x)));
-    result.y = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.y)), @intCast(i32, Chunk.dim.y)));
-    result.z = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.z)), @intCast(i32, Chunk.dim.z)));
-    return result;
+pub inline fn worldf32ToChunkRel(pos: rl.Vector3) @Vector(3, u8) {
+    return @Vector(3, u8){
+        @intCast(u8, @mod(@floatToInt(i32, @floor(pos.x)), @intCast(i32, Chunk.dim))),
+        @intCast(u8, @mod(@floatToInt(i32, @floor(pos.y)), @intCast(i32, Chunk.dim))),
+        @intCast(u8, @mod(@floatToInt(i32, @floor(pos.z)), @intCast(i32, Chunk.dim))),
+    };
 }
 
 /// Takes a relative chunk position, chunk coords. Returns the block position in world space.
-pub inline fn relToWorldi32(pos: Vector3(u8), chunk_coords: Vector3(i32)) Vector3(i32) {
-    var result: Vector3(i32) = undefined;
-    result.x = chunk_coords.x * Chunk.dim.x + pos.x;
-    result.y = chunk_coords.y * Chunk.dim.y + pos.y;
-    result.z = chunk_coords.z * Chunk.dim.z + pos.z;
-    return result;
+pub inline fn relToWorldi32(pos: @Vector(3, u8), chunk_coords: @Vector(3, i32)) @Vector(3, i32) {
+    return chunk_coords * @splat(3, @as(i32, Chunk.dim)) + pos;
 }
 
-/// Given a Vector(i32) in world space, return the eqv. chunk space coords.
-pub inline fn worldi32ToChunki32(pos: Vector3(i32)) Vector3(i32) {
-    var result: Vector3(i32) = undefined;
-    result.x = @divFloor(pos.x, Chunk.dim.x);
-    result.y = @divFloor(pos.y, Chunk.dim.y);
-    result.z = @divFloor(pos.z, Chunk.dim.z);
-    return result;
+/// Given a @Vector(3, i32) in world space, return the eqv. chunk space coords.
+pub inline fn worldi32ToChunki32(pos: @Vector(3, i32)) @Vector(3, i32) {
+    return @Vector(3, i32){
+        @divFloor(pos[0], Chunk.dim),
+        @divFloor(pos[1], Chunk.dim),
+        @divFloor(pos[2], Chunk.dim),
+    };
 }
 
 /// Given a vector of floats in world space, return the eqv. chunk space coords.
-pub inline fn worldf32ToChunki32(pos: rl.Vector3) Vector3(i32) {
-    var result: Vector3(i32) = undefined;
-    result.x = @floatToInt(i32, @divFloor(pos.x, @intToFloat(f32, Chunk.dim.x)));
-    result.y = @floatToInt(i32, @divFloor(pos.y, @intToFloat(f32, Chunk.dim.y)));
-    result.z = @floatToInt(i32, @divFloor(pos.z, @intToFloat(f32, Chunk.dim.z)));
-    return result;
+pub inline fn worldf32ToChunki32(pos: rl.Vector3) @Vector(3, i32) {
+    return @Vector(3, i32){
+        @floatToInt(i32, @divFloor(pos.x, @intToFloat(f32, Chunk.dim))),
+        @floatToInt(i32, @divFloor(pos.y, @intToFloat(f32, Chunk.dim))),
+        @floatToInt(i32, @divFloor(pos.z, @intToFloat(f32, Chunk.dim))),
+    };
 }
 
-pub const d_chunk_coordses = [_]Vector3(i32){
-    Vector3(i32){ .x = 0, .y = 1, .z = 0 },
-    Vector3(i32){ .x = 0, .y = -1, .z = 0 },
-    Vector3(i32){ .x = -1, .y = 0, .z = 0 },
-    Vector3(i32){ .x = 1, .y = 0, .z = 0 },
-    Vector3(i32){ .x = 0, .y = 0, .z = -1 },
-    Vector3(i32){ .x = 0, .y = 0, .z = 1 },
+pub const d_chunk_coordses = [_]@Vector(3, i32){
+    @Vector(3, i32){ 0, 1, 0 },
+    @Vector(3, i32){ 0, -1, 0 },
+    @Vector(3, i32){ -1, 0, 0 },
+    @Vector(3, i32){ 1, 0, 0 },
+    @Vector(3, i32){ 0, 0, -1 },
+    @Vector(3, i32){ 0, 0, 1 },
 };
 
 fn queueChunks(
-    load_queue: *SmolQ(Vector3(i32), loaded_chunk_capacity),
-    current_chunk_coords: Vector3(i32),
+    load_queue: *SmolQ(@Vector(3, i32), loaded_chunk_capacity),
+    current_chunk_coords: @Vector(3, i32),
     loaded_chunks: []*Chunk,
     loaded_chunk_count: u8,
 ) void {
     outer: for (d_chunk_coordses) |d_chunk_coords| {
         if (load_queue.len + 1 > loaded_chunk_capacity - loaded_chunk_count) return;
-        const next_chunk_coords = current_chunk_coords.add(d_chunk_coords);
+        const next_chunk_coords = current_chunk_coords + d_chunk_coords;
 
         // Next chunk coords don't exist in either load queue or loaded chunks
         for (load_queue.items[0..load_queue.len]) |chunk_coords|
-            if (next_chunk_coords.equals(chunk_coords)) continue :outer;
+            if (@reduce(.And, next_chunk_coords == chunk_coords)) continue :outer;
         for (loaded_chunks[0..loaded_chunk_count]) |chunk|
-            if (next_chunk_coords.equals(chunk.coords)) continue :outer;
+            if (@reduce(.And, next_chunk_coords == chunk.coords)) continue :outer;
         load_queue.pushAssumeCapacity(next_chunk_coords);
     }
 }
@@ -204,9 +191,9 @@ pub fn loadChunks(
     pos: rl.Vector3,
 ) !void {
     var loaded_chunk_count: u8 = 0;
-    var chunk_coords: Vector3(i32) = undefined;
+    var chunk_coords: @Vector(3, i32) = undefined;
 
-    var load_queue = SmolQ(Vector3(i32), loaded_chunk_capacity){
+    var load_queue = SmolQ(@Vector(3, i32), loaded_chunk_capacity){
         .items = undefined,
         .len = 0,
     };
@@ -229,9 +216,12 @@ pub fn loadChunks(
                         if (cached_chunk_ptr == loaded_chunk_ptr) continue :outer;
                     }
                     // How far is this chunk from the start chunk pos?
-                    const distance_to_start = (try std.math.absInt(start_chunk_coords.x - cached_chunk_ptr.coords.x)) +
-                        (try std.math.absInt(start_chunk_coords.y - cached_chunk_ptr.coords.y)) +
-                        (try std.math.absInt(start_chunk_coords.z - cached_chunk_ptr.coords.z));
+                    const diff_start_and_cached = start_chunk_coords - cached_chunk_ptr.coords;
+                    var distance_to_start =
+                        try std.math.absInt(diff_start_and_cached[0]) +
+                        try std.math.absInt(diff_start_and_cached[1]) +
+                        try std.math.absInt(diff_start_and_cached[2]);
+
                     // Update farthest chunk
                     if (distance_to_start > chunk_to_remove_distance) {
                         chunk_to_remove_ptr = cached_chunk_ptr;
@@ -256,7 +246,7 @@ pub fn loadChunks(
                     break :ablk ChunkHandle{ .index = save_header.chunk_count + 1, .coords = removed_chunk_handle.coords };
                 };
 
-                try world_save_reader.skipBytes((@sizeOf(ChunkHandle) + @intCast(u32, Chunk.dim.x) * @intCast(u32, Chunk.dim.y) * @intCast(i32, Chunk.dim.z)) * (world_chunk_handle.index - 1), .{});
+                try world_save_reader.skipBytes((@sizeOf(ChunkHandle) + @intCast(u32, Chunk.dim) * @intCast(u32, Chunk.dim) * @intCast(i32, Chunk.dim)) * (world_chunk_handle.index - 1), .{});
                 try world_save_writer.writeStruct(ChunkHandle{ .index = world_chunk_handle.index, .coords = world_chunk_handle.coords });
                 try world_save_writer.writeAll(&self.chunk_cache[chunk_cache_index].block_data);
             }
@@ -268,12 +258,12 @@ pub fn loadChunks(
                 const world_save_reader = world_save_file.reader();
                 try world_save_reader.skipBytes(@sizeOf(WorldSaveHeader), .{});
                 std.debug.assert(world_chunk_handle.?.index > 0);
-                try world_save_reader.skipBytes((@sizeOf(ChunkHandle) + @intCast(u32, Chunk.dim.x) * @intCast(u32, Chunk.dim.y) * @intCast(i32, Chunk.dim.z)) * (world_chunk_handle.?.index - 1), .{});
+                try world_save_reader.skipBytes((@sizeOf(ChunkHandle) + @intCast(u32, Chunk.dim) * @intCast(u32, Chunk.dim) * @intCast(i32, Chunk.dim)) * (world_chunk_handle.?.index - 1), .{});
                 const world_save_chunk = try world_save_reader.readStruct(ChunkHandle);
 
                 self.chunk_cache[chunk_cache_index].index = world_save_chunk.index;
                 self.chunk_cache[chunk_cache_index].coords = world_save_chunk.coords;
-                self.chunk_cache[chunk_cache_index].block_data = try world_save_reader.readBytesNoEof(Chunk.dim.x * Chunk.dim.y * Chunk.dim.z);
+                self.chunk_cache[chunk_cache_index].block_data = try world_save_reader.readBytesNoEof(Chunk.dim * Chunk.dim * Chunk.dim);
             } else {
                 self.chunk_cache[chunk_cache_index].index = 0;
                 self.chunk_cache[chunk_cache_index].coords = chunk_coords;
@@ -286,31 +276,28 @@ pub fn loadChunks(
         };
         self.loaded_chunks[loaded_chunk_count] = &self.chunk_cache[chunk_cache_handle.index];
         loaded_chunk_count += 1;
-        std.debug.print("Loaded chunk: ({d},{d},{d})\n", .{ chunk_coords.x, chunk_coords.y, chunk_coords.z });
     }
 }
 
 pub fn cstFoundTarget(a: ChunkHandle, b: ChunkHandle) bool {
-    var result = false;
-    result = a.coords.equals(b.coords);
-    return result;
+    return @reduce(.And, a.coords == b.coords);
 }
 
 pub fn cstGoLeft(a: ChunkHandle, b: ChunkHandle) bool {
     var check_left: bool = undefined;
-    if (a.coords.x < b.coords.x) { // Check x coords
+    if (a.coords[0] < b.coords[0]) { // Check x coords
         check_left = true;
-    } else if (a.coords.x > b.coords.x) {
+    } else if (a.coords[0] > b.coords[0]) {
         check_left = false;
     } else { // X coord is equal check y
-        if (a.coords.y < b.coords.y) {
+        if (a.coords[1] < b.coords[1]) {
             check_left = true;
-        } else if (a.coords.y > b.coords.y) {
+        } else if (a.coords[1] > b.coords[1]) {
             check_left = false;
         } else { // Y coord is equal check z
-            if (a.coords.z < b.coords.z) {
+            if (a.coords[2] < b.coords[2]) {
                 check_left = true;
-            } else if (a.coords.z > b.coords.z) {
+            } else if (a.coords[2] > b.coords[2]) {
                 check_left = false;
             } else unreachable;
         }

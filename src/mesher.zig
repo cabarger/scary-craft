@@ -15,7 +15,6 @@ const MemoryPoolExtra = std.heap.MemoryPoolExtra;
 
 const SmolQ = scary_types.SmolQ;
 const BST = scary_types.BST;
-const Vector3 = scary_types.Vector3;
 
 const hashString = std.hash_map.hashString;
 
@@ -24,8 +23,8 @@ pub const mem_per_chunk = 150 * 1024; //150 kb per chunk /// World.loaded_chunk_
 
 pub const ChunkMesh = struct {
     mem: *align(@alignOf(?*MemoryPoolExtra([mem_per_chunk]u8, .{ .alignment = null, .growable = false }))) [mem_per_chunk]u8,
-    coords: Vector3(i32),
-    updated_block_pos: ?Vector3(u8),
+    coords: @Vector(3, i32),
+    updated_block_pos: ?@Vector(3, u8),
     mesh: rl.Mesh,
 };
 
@@ -55,18 +54,18 @@ inline fn setVertex3f(verticies: []f32, verticies_offset: *u32, x: f32, y: f32, 
     verticies_offset.* += 3;
 }
 
-fn shouldDrawFace(world: *World, atlas: *Atlas, chunk_index: usize, block_x: u8, block_y: u8, block_z: u8, face_normal: Vector3(i32)) bool {
-    var chunk_coords = Vector3(i32){
-        .x = @divFloor(@intCast(i32, block_x) + face_normal.x, Chunk.dim.x),
-        .y = @divFloor(@intCast(i32, block_y) + face_normal.y, Chunk.dim.y),
-        .z = @divFloor(@intCast(i32, block_z) + face_normal.z, Chunk.dim.z),
+fn shouldDrawFace(world: *World, atlas: *Atlas, chunk_index: usize, block_x: u8, block_y: u8, block_z: u8, face_normal: @Vector(3, i32)) bool {
+    var chunk_coords = @Vector(3, i32){
+        @divFloor(@intCast(i32, block_x) + face_normal[0], Chunk.dim),
+        @divFloor(@intCast(i32, block_y) + face_normal[1], Chunk.dim),
+        @divFloor(@intCast(i32, block_z) + face_normal[2], Chunk.dim),
     };
-    chunk_coords = Vector3(i32).add(world.loaded_chunks[chunk_index].coords, chunk_coords);
+    chunk_coords += world.loaded_chunks[chunk_index].coords;
     const border_or_same_chunk_index = world.chunkIndexFromCoords(chunk_coords) orelse return false;
 
-    var wrapped_x: Chunk.u_dimx = if (face_normal.x >= 0) @intCast(Chunk.u_dimx, block_x) +% @intCast(Chunk.u_dimx, face_normal.x) else @intCast(Chunk.u_dimx, block_x) -% 1;
-    var wrapped_y: Chunk.u_dimy = if (face_normal.y >= 0) @intCast(Chunk.u_dimy, block_y) +% @intCast(Chunk.u_dimy, face_normal.y) else @intCast(Chunk.u_dimy, block_y) -% 1;
-    var wrapped_z: Chunk.u_dimz = if (face_normal.z >= 0) @intCast(Chunk.u_dimz, block_z) +% @intCast(Chunk.u_dimz, face_normal.z) else @intCast(Chunk.u_dimz, block_z) -% 1;
+    var wrapped_x: Chunk.u_dim = if (face_normal[0] >= 0) @intCast(Chunk.u_dim, block_x) +% @intCast(Chunk.u_dim, face_normal[0]) else @intCast(Chunk.u_dim, block_x) -% 1;
+    var wrapped_y: Chunk.u_dim = if (face_normal[1] >= 0) @intCast(Chunk.u_dim, block_y) +% @intCast(Chunk.u_dim, face_normal[1]) else @intCast(Chunk.u_dim, block_y) -% 1;
+    var wrapped_z: Chunk.u_dim = if (face_normal[2] >= 0) @intCast(Chunk.u_dim, block_z) +% @intCast(Chunk.u_dim, face_normal[2]) else @intCast(Chunk.u_dim, block_z) -% 1;
 
     return isAirBlock(world, border_or_same_chunk_index, wrapped_x, wrapped_y, wrapped_z) or isTransBlock(world, atlas, border_or_same_chunk_index, wrapped_x, wrapped_y, wrapped_z);
 }
@@ -100,11 +99,11 @@ pub fn cullMesh(
     var face_count: c_int = 0;
     {
         var block_y: u8 = 0;
-        while (block_y < Chunk.dim.y) : (block_y += 1) {
+        while (block_y < Chunk.dim) : (block_y += 1) {
             var block_z: u8 = 0;
-            while (block_z < Chunk.dim.z) : (block_z += 1) {
+            while (block_z < Chunk.dim) : (block_z += 1) {
                 var block_x: u8 = 0;
-                while (block_x < Chunk.dim.x) : (block_x += 1) {
+                while (block_x < Chunk.dim) : (block_x += 1) {
                     for (World.d_chunk_coordses) |d_chunk_coords| {
                         if (isAirBlock(world, chunk_index, block_x, block_y, block_z))
                             continue;
@@ -141,18 +140,18 @@ pub fn cullMesh(
     // TODO(caleb): Side and bottom textures
     {
         var block_y: u8 = 0;
-        while (block_y < Chunk.dim.y) : (block_y += 1) {
+        while (block_y < Chunk.dim) : (block_y += 1) {
             var block_z: u8 = 0;
-            while (block_z < Chunk.dim.z) : (block_z += 1) {
+            while (block_z < Chunk.dim) : (block_z += 1) {
                 var block_x: u8 = 0;
-                while (block_x < Chunk.dim.x) : (block_x += 1) {
+                while (block_x < Chunk.dim) : (block_x += 1) {
                     if (isAirBlock(world, chunk_index, block_x, block_y, block_z))
                         continue;
 
                     const block_pos = rl.Vector3{
-                        .x = @intToFloat(f32, block_x) + @intToFloat(f32, world.loaded_chunks[chunk_index].coords.x * Chunk.dim.x),
-                        .y = @intToFloat(f32, block_y) + @intToFloat(f32, world.loaded_chunks[chunk_index].coords.y * Chunk.dim.y),
-                        .z = @intToFloat(f32, block_z) + @intToFloat(f32, world.loaded_chunks[chunk_index].coords.z * Chunk.dim.z),
+                        .x = @intToFloat(f32, block_x) + @intToFloat(f32, world.loaded_chunks[chunk_index].coords[0] * Chunk.dim),
+                        .y = @intToFloat(f32, block_y) + @intToFloat(f32, world.loaded_chunks[chunk_index].coords[1] * Chunk.dim),
+                        .z = @intToFloat(f32, block_z) + @intToFloat(f32, world.loaded_chunks[chunk_index].coords[2] * Chunk.dim),
                     };
 
                     const id = world.loaded_chunks[chunk_index].fetch(block_x, block_y, block_z) orelse unreachable;
@@ -164,7 +163,7 @@ pub fn cullMesh(
                     const texcoord_end_y = texcoord_start_y + 128 / @intToFloat(f32, sprite_sheet.texture.height);
 
                     // Top Face
-                    if (shouldDrawFace(world, sprite_sheet, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = 0, .y = 1, .z = 0 })) {
+                    if (shouldDrawFace(world, sprite_sheet, chunk_index, block_x, block_y, block_z, @Vector(3, i32){ 0, 1, 0 })) {
                         setFaceNormals(normals, &normals_offset, 0, 1, 0); // Normals pointing up
                         setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y + block_dim.y, block_pos.z + block_dim.z); // Bottom left texture and vertex
@@ -181,7 +180,7 @@ pub fn cullMesh(
                     }
 
                     // Front face
-                    if (shouldDrawFace(world, sprite_sheet, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = 0, .y = 0, .z = 1 })) {
+                    if (shouldDrawFace(world, sprite_sheet, chunk_index, block_x, block_y, block_z, @Vector(3, i32){ 0, 0, 1 })) {
                         setFaceNormals(normals, &normals_offset, 0, 0, 1); // Normals pointing towards viewer
 
                         setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
@@ -202,7 +201,7 @@ pub fn cullMesh(
                     }
 
                     // Back face
-                    if (shouldDrawFace(world, sprite_sheet, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = 0, .y = 0, .z = -1 })) {
+                    if (shouldDrawFace(world, sprite_sheet, chunk_index, block_x, block_y, block_z, @Vector(3, i32){ 0, 0, -1 })) {
                         setFaceNormals(normals, &normals_offset, 0, 0, -1); // Normals pointing away from viewer
                         setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y, block_pos.z); // Bottom left texture and vertex
@@ -219,7 +218,7 @@ pub fn cullMesh(
                     }
 
                     // Bottom face
-                    if (shouldDrawFace(world, sprite_sheet, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = 0, .y = -1, .z = 0 })) {
+                    if (shouldDrawFace(world, sprite_sheet, chunk_index, block_x, block_y, block_z, @Vector(3, i32){ 0, -1, 0 })) {
                         setFaceNormals(normals, &normals_offset, 0.0, -1.0, 0.0); // Normals pointing down
                         setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y, block_pos.z); // Bottom left texture and vertex
@@ -236,7 +235,7 @@ pub fn cullMesh(
                     }
 
                     // Right face
-                    if (shouldDrawFace(world, sprite_sheet, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = 1, .y = 0, .z = 0 })) {
+                    if (shouldDrawFace(world, sprite_sheet, chunk_index, block_x, block_y, block_z, @Vector(3, i32){ 1, 0, 0 })) {
                         setFaceNormals(normals, &normals_offset, 1.0, 0.0, 0.0); // Normals pointing right
                         setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x + block_dim.x, block_pos.y, block_pos.z + block_dim.z); // Bottom left of the texture and vertex
@@ -253,7 +252,7 @@ pub fn cullMesh(
                     }
 
                     // Left Face
-                    if (shouldDrawFace(world, sprite_sheet, chunk_index, block_x, block_y, block_z, Vector3(i32){ .x = -1, .y = 0, .z = 0 })) {
+                    if (shouldDrawFace(world, sprite_sheet, chunk_index, block_x, block_y, block_z, @Vector(3, i32){ -1, 0, 0 })) {
                         setFaceNormals(normals, &normals_offset, -1.0, 0.0, 0.0); // Normals Pointing Left
                         setTexcoord2f(texcoords, &texcoords_offset, texcoord_start_x, texcoord_end_y);
                         setVertex3f(verticies, &verticies_offset, block_pos.x, block_pos.y, block_pos.z); // Bottom left of the texture and texture
@@ -290,19 +289,19 @@ pub fn updateChunkMeshes(
 ) void {
     for (World.d_chunk_coordses) |d_chunk_coords| {
         var world_pos = World.relToWorldi32(chunk_meshes[mesh_index].updated_block_pos.?, chunk_meshes[mesh_index].coords);
-        world_pos = Vector3(i32).add(world_pos, d_chunk_coords);
+        world_pos += d_chunk_coords;
         const neighbor_coords = World.worldi32ToChunki32(world_pos);
-        if (Vector3(i32).equals(neighbor_coords, chunk_meshes[mesh_index].coords))
+        if (@reduce(.And, neighbor_coords == chunk_meshes[mesh_index].coords))
             continue;
 
         const loaded_chunk_index = world.chunkIndexFromCoords(neighbor_coords) orelse continue;
 
         const rel_block_pos = World.worldi32ToRel(world_pos);
-        const block_val = world.loaded_chunks[loaded_chunk_index].fetch(rel_block_pos.x, rel_block_pos.y, rel_block_pos.z) orelse 0;
+        const block_val = world.loaded_chunks[loaded_chunk_index].fetch(rel_block_pos[0], rel_block_pos[1], rel_block_pos[2]) orelse 0;
 
         if (block_val != 0) {
             for (chunk_meshes) |*chunk_mesh| {
-                if (Vector3(i32).equals(chunk_mesh.coords, neighbor_coords)) {
+                if (@reduce(.And, chunk_mesh.coords == neighbor_coords)) {
                     mesh_pool.destroy(chunk_mesh.mem);
                     unloadMesh(chunk_mesh.mesh);
                     chunk_mesh.* = cullMesh(mesh_pool, @intCast(u8, loaded_chunk_index), world, atlas) catch unreachable;
@@ -335,7 +334,7 @@ pub fn updateChunkMeshesSpatially(
     for (chunk_meshes, 0..) |*chunk_mesh, chunk_mesh_index| {
         var has_loaded_chunk = false;
         for (world.loaded_chunks) |loaded_chunk| {
-            if (Vector3(i32).equals(loaded_chunk.coords, chunk_mesh.coords)) {
+            if (@reduce(.And, loaded_chunk.coords == chunk_mesh.coords)) {
                 has_loaded_chunk = true;
                 break;
             }
@@ -352,7 +351,7 @@ pub fn updateChunkMeshesSpatially(
     for (world.loaded_chunks, 0..) |loaded_chunk, loaded_chunk_index| {
         var has_mesh_chunk = false;
         for (chunk_meshes) |chunk_mesh| {
-            if (Vector3(i32).equals(loaded_chunk.coords, chunk_mesh.coords)) {
+            if (@reduce(.And, loaded_chunk.coords == chunk_mesh.coords)) {
                 has_mesh_chunk = true;
                 break;
             }

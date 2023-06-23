@@ -18,7 +18,6 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const FixedBufferAllocator = std.heap.FixedBufferAllocator;
 const MemoryPoolExtra = std.heap.MemoryPoolExtra;
-const Vector3 = scary_types.Vector3;
 const VectorOps = lag.VectorOps;
 const Vector3f32Ops = VectorOps(3, f32);
 const Vector3f32 = @Vector(3, f32);
@@ -27,7 +26,6 @@ const Vector3f32 = @Vector(3, f32);
 // Fix the renderer :( - glass
 
 // TODO(caleb):
-// @Vector - inside of source files that aren't main.
 // OBJECTIVES (possibly in the form of notes that you can pick up?)
 // INSERT SCARY ENEMY IDEAS HERE...
 // Frustum culling ( do this when game gets slow? )
@@ -298,17 +296,17 @@ fn playerWouldCollideWithBlock(world: *World, velocity_: Vector3f32, player: *Pl
     const world_block_max = World.worldf32ToWorldi32(aabb.max);
 
     var world_block_pos: @Vector(3, i32) = undefined;
-    world_block_pos[2] = world_block_min.z;
-    while (world_block_pos[2] <= world_block_max.z) : (world_block_pos[2] += 1) {
-        world_block_pos[1] = world_block_min.y;
-        while (world_block_pos[1] <= world_block_max.y) : (world_block_pos[1] += 1) {
-            world_block_pos[0] = world_block_min.x;
-            while (world_block_pos[0] <= world_block_max.x) : (world_block_pos[0] += 1) {
-                const chunk_coords = World.worldi32ToChunki32(Vector3(i32){ .x = world_block_pos[0], .y = world_block_pos[1], .z = world_block_pos[2] });
+    world_block_pos[2] = world_block_min[2];
+    while (world_block_pos[2] <= world_block_max[2]) : (world_block_pos[2] += 1) {
+        world_block_pos[1] = world_block_min[1];
+        while (world_block_pos[1] <= world_block_max[1]) : (world_block_pos[1] += 1) {
+            world_block_pos[0] = world_block_min[0];
+            while (world_block_pos[0] <= world_block_max[0]) : (world_block_pos[0] += 1) {
+                const chunk_coords = World.worldi32ToChunki32(world_block_pos);
                 const chunk_index = world.chunkIndexFromCoords(chunk_coords) orelse continue;
-                const chunk_rel_pos = World.worldi32ToRel(Vector3(i32){ .x = world_block_pos[0], .y = world_block_pos[1], .z = world_block_pos[2] });
+                const chunk_rel_pos = World.worldi32ToRel(world_block_pos);
 
-                if ((world.loaded_chunks[chunk_index].fetch(chunk_rel_pos.x, chunk_rel_pos.y, chunk_rel_pos.z) orelse unreachable) != 0)
+                if ((world.loaded_chunks[chunk_index].fetch(chunk_rel_pos[0], chunk_rel_pos[1], chunk_rel_pos[2]) orelse unreachable) != 0)
                     return true;
             }
         }
@@ -486,15 +484,15 @@ pub fn main() !void {
         if (playerWouldCollideWithBlock(&world, Vector3f32{ 0, 0, 0 }, &player)) unreachable;
 
         const player_chunk_coords = @Vector(3, i32){
-            @floatToInt(i32, @divFloor(player.position[0], @intToFloat(f32, Chunk.dim.x))),
-            @floatToInt(i32, @divFloor(player.position[1], @intToFloat(f32, Chunk.dim.y))),
-            @floatToInt(i32, @divFloor(player.position[2], @intToFloat(f32, Chunk.dim.z))),
+            @floatToInt(i32, @divFloor(player.position[0], @intToFloat(f32, Chunk.dim))),
+            @floatToInt(i32, @divFloor(player.position[1], @intToFloat(f32, Chunk.dim))),
+            @floatToInt(i32, @divFloor(player.position[2], @intToFloat(f32, Chunk.dim))),
         };
 
         const last_player_chunk_coords = @Vector(3, i32){
-            @floatToInt(i32, @divFloor(last_player_position[0], @intToFloat(f32, Chunk.dim.x))),
-            @floatToInt(i32, @divFloor(last_player_position[1], @intToFloat(f32, Chunk.dim.y))),
-            @floatToInt(i32, @divFloor(last_player_position[2], @intToFloat(f32, Chunk.dim.z))),
+            @floatToInt(i32, @divFloor(last_player_position[0], @intToFloat(f32, Chunk.dim))),
+            @floatToInt(i32, @divFloor(last_player_position[1], @intToFloat(f32, Chunk.dim))),
+            @floatToInt(i32, @divFloor(last_player_position[2], @intToFloat(f32, Chunk.dim))),
         };
         if (@reduce(.Or, last_player_chunk_coords != player_chunk_coords)) {
             try world.loadChunks(@bitCast(rl.Vector3, player.position));
@@ -528,31 +526,31 @@ pub fn main() !void {
             target_block = block_caster.blockHitFromPoint(world.loaded_chunks[loaded_chunk_index], crosshair_ray_collision.point);
 
             if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)) { // Break block
-                world.loaded_chunks[loaded_chunk_index].put(0, target_block.coords.x, target_block.coords.y, target_block.coords.z);
+                world.loaded_chunks[loaded_chunk_index].put(0, target_block.coords[0], target_block.coords[1], target_block.coords[2]);
                 chunk_meshes[collision_chunk_index].updated_block_pos = target_block.coords;
                 mesher.updateChunkMeshes(&mesh_pool, &chunk_meshes, collision_chunk_index, &world, &atlas);
             } else if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_RIGHT)) { // Place block
-                var d_target_block_coords = rl.Vector3Zero();
+                var d_target_block_coords = @Vector(3, f32){ 0, 0, 0 };
                 switch (target_block.face) {
-                    .top => d_target_block_coords = rl.Vector3{ .x = 0, .y = 1, .z = 0 },
-                    .bottom => d_target_block_coords = rl.Vector3{ .x = 0, .y = -1, .z = 0 },
-                    .left => d_target_block_coords = rl.Vector3{ .x = -1, .y = 0, .z = 0 },
-                    .right => d_target_block_coords = rl.Vector3{ .x = 1, .y = 0, .z = 0 },
-                    .near => d_target_block_coords = rl.Vector3{ .x = 0, .y = 0, .z = 1 },
-                    .far => d_target_block_coords = rl.Vector3{ .x = 0, .y = 0, .z = -1 },
+                    .top => d_target_block_coords = @Vector(3, f32){ 0, 1, 0 },
+                    .bottom => d_target_block_coords = @Vector(3, f32){ 0, -1, 0 },
+                    .left => d_target_block_coords = @Vector(3, f32){ -1, 0, 0 },
+                    .right => d_target_block_coords = @Vector(3, f32){ 1, 0, 0 },
+                    .near => d_target_block_coords = @Vector(3, f32){ 0, 0, 1 },
+                    .far => d_target_block_coords = @Vector(3, f32){ 0, 0, -1 },
                 }
 
-                var chunk_coords = Vector3(i32){
-                    .x = @divFloor(@intCast(i32, target_block.coords.x) + @floatToInt(i32, d_target_block_coords.x), Chunk.dim.x),
-                    .y = @divFloor(@intCast(i32, target_block.coords.y) + @floatToInt(i32, d_target_block_coords.y), Chunk.dim.y),
-                    .z = @divFloor(@intCast(i32, target_block.coords.z) + @floatToInt(i32, d_target_block_coords.z), Chunk.dim.z),
+                var chunk_coords = @Vector(3, i32){
+                    @divFloor(@intCast(i32, target_block.coords[0]) + @floatToInt(i32, d_target_block_coords[0]), Chunk.dim),
+                    @divFloor(@intCast(i32, target_block.coords[1]) + @floatToInt(i32, d_target_block_coords[1]), Chunk.dim),
+                    @divFloor(@intCast(i32, target_block.coords[2]) + @floatToInt(i32, d_target_block_coords[2]), Chunk.dim),
                 };
-                chunk_coords = Vector3(i32).add(world.loaded_chunks[loaded_chunk_index].coords, chunk_coords);
+                chunk_coords += world.loaded_chunks[loaded_chunk_index].coords;
                 const border_or_same_chunk_index = world.chunkIndexFromCoords(chunk_coords) orelse unreachable; // NOTE(caleb): This chunk hasn't been loaded but should be if it's a border chunk.
 
-                const wrapped_x: Chunk.u_dimx = if (d_target_block_coords.x >= 0) @intCast(Chunk.u_dimx, target_block.coords.x) +% @floatToInt(Chunk.u_dimx, d_target_block_coords.x) else @intCast(Chunk.u_dimx, target_block.coords.x) -% 1;
-                const wrapped_y: Chunk.u_dimy = if (d_target_block_coords.y >= 0) @intCast(Chunk.u_dimy, target_block.coords.y) +% @floatToInt(Chunk.u_dimy, d_target_block_coords.y) else @intCast(Chunk.u_dimy, target_block.coords.y) -% 1;
-                const wrapped_z: Chunk.u_dimz = if (d_target_block_coords.z >= 0) @intCast(Chunk.u_dimz, target_block.coords.z) +% @floatToInt(Chunk.u_dimz, d_target_block_coords.z) else @intCast(Chunk.u_dimz, target_block.coords.z) -% 1;
+                const wrapped_x: Chunk.u_dim = if (d_target_block_coords[0] >= 0) @intCast(Chunk.u_dim, target_block.coords[0]) +% @floatToInt(Chunk.u_dim, d_target_block_coords[0]) else @intCast(Chunk.u_dim, target_block.coords[0]) -% 1;
+                const wrapped_y: Chunk.u_dim = if (d_target_block_coords[1] >= 0) @intCast(Chunk.u_dim, target_block.coords[1]) +% @floatToInt(Chunk.u_dim, d_target_block_coords[1]) else @intCast(Chunk.u_dim, target_block.coords[1]) -% 1;
+                const wrapped_z: Chunk.u_dim = if (d_target_block_coords[2] >= 0) @intCast(Chunk.u_dim, target_block.coords[2]) +% @floatToInt(Chunk.u_dim, d_target_block_coords[2]) else @intCast(Chunk.u_dim, target_block.coords[2]) -% 1;
 
                 // Place block in world
                 world.loaded_chunks[border_or_same_chunk_index].put(
@@ -573,11 +571,11 @@ pub fn main() !void {
                 } else { // Update mesh since this block isn't inside the player.
                     var mesh_index: usize = 0;
                     for (chunk_meshes) |mesh| {
-                        if (mesh.coords.equals(world.loaded_chunks[border_or_same_chunk_index].coords)) break;
+                        if (@reduce(.And, mesh.coords == world.loaded_chunks[border_or_same_chunk_index].coords)) break;
                         mesh_index += 1;
                     }
 
-                    chunk_meshes[mesh_index].updated_block_pos = Vector3(u8){ .x = @intCast(u8, wrapped_x), .y = @intCast(u8, wrapped_y), .z = @intCast(u8, wrapped_z) };
+                    chunk_meshes[mesh_index].updated_block_pos = @Vector(3, u8){ @intCast(u8, wrapped_x), @intCast(u8, wrapped_y), @intCast(u8, wrapped_z) };
                     mesher.updateChunkMeshes(&mesh_pool, &chunk_meshes, mesh_index, &world, &atlas);
                 }
             }
@@ -588,7 +586,7 @@ pub fn main() !void {
         rl.ClearBackground(rl.BLACK);
         rl.BeginMode3D(camera);
         // const frustum = Frustum.extractFrustum(&camera, aspect);
-        // var chunk_box = AABB{ .min = rl.Vector3Zero(), .max = rl.Vector3Add(rl.Vector3Zero(), rl.Vector3{ .x = @intToFloat(f32, Chunk.dim.x), .y = @intToFloat(f32, Chunk.dim.x), .z = @intToFloat(f32, Chunk.dim.x) }) };
+        // var chunk_box = AABB{ .min = rl.Vector3Zero(), .max = rl.Vector3Add(rl.Vector3Zero(), rl.Vector3{ .x = @intToFloat(f32, Chunk.dim), .y = @intToFloat(f32, Chunk.dim), .z = @intToFloat(f32, Chunk.dim) }) };
 
         // var should_draw_chunk = false;
         // if (frustum.containsAABB(&chunk_box)) { // FIXME(caleb): This is still borked...
@@ -601,13 +599,13 @@ pub fn main() !void {
 
             if (debug_draw_chunk_borders) {
                 const chunk_bounding_box = rl.BoundingBox{ .min = rl.Vector3{
-                    .x = @intToFloat(f32, chunk_mesh.coords.x * Chunk.dim.x),
-                    .y = @intToFloat(f32, chunk_mesh.coords.y * Chunk.dim.y),
-                    .z = @intToFloat(f32, chunk_mesh.coords.z * Chunk.dim.z),
+                    .x = @intToFloat(f32, chunk_mesh.coords[0] * Chunk.dim),
+                    .y = @intToFloat(f32, chunk_mesh.coords[1] * Chunk.dim),
+                    .z = @intToFloat(f32, chunk_mesh.coords[2] * Chunk.dim),
                 }, .max = rl.Vector3{
-                    .x = @intToFloat(f32, chunk_mesh.coords.x * Chunk.dim.x + Chunk.dim.x),
-                    .y = @intToFloat(f32, chunk_mesh.coords.y * Chunk.dim.y + Chunk.dim.y),
-                    .z = @intToFloat(f32, chunk_mesh.coords.z * Chunk.dim.z + Chunk.dim.z),
+                    .x = @intToFloat(f32, chunk_mesh.coords[0] * Chunk.dim + Chunk.dim),
+                    .y = @intToFloat(f32, chunk_mesh.coords[1] * Chunk.dim + Chunk.dim),
+                    .z = @intToFloat(f32, chunk_mesh.coords[2] * Chunk.dim + Chunk.dim),
                 } };
                 rl.DrawBoundingBox(chunk_bounding_box, rl.GREEN);
             }
@@ -655,7 +653,7 @@ pub fn main() !void {
             y_offset += rl.MeasureTextEx(font, @ptrCast([*c]const u8, player_chunk_strz), font_size, font_spacing).y;
 
             if (crosshair_ray_collision.hit and crosshair_ray_collision.distance < crosshair_block_range) {
-                const target_block_point_strz = try std.fmt.bufPrintZ(&strz_buffer, "Target block: (x:{d:.2}, y:{d:.2}, z:{d:.2})", .{ target_block.coords.x, target_block.coords.y, target_block.coords.z });
+                const target_block_point_strz = try std.fmt.bufPrintZ(&strz_buffer, "Target block: (x:{d:.2}, y:{d:.2}, z:{d:.2})", .{ target_block.coords[0], target_block.coords[1], target_block.coords[2] });
                 rl.DrawTextEx(font, @ptrCast([*c]const u8, target_block_point_strz), rl.Vector2{ .x = 0, .y = y_offset }, font_size, font_spacing, rl.WHITE);
                 y_offset += rl.MeasureTextEx(font, @ptrCast([*c]const u8, target_block_point_strz), font_size, font_spacing).y;
 

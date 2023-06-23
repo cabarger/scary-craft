@@ -7,36 +7,34 @@ const Chunk = @import("Chunk.zig");
 const Plane = @import("math/Plane.zig");
 const Frustum = @import("math/Frustum.zig");
 
-const Vector3 = scary_types.Vector3;
-
 pub const BlockHit = struct {
-    coords: Vector3(u8),
+    coords: @Vector(3, u8),
     face: Frustum.PlaneIndex,
 };
 
 /// Just breathe it's ok
-inline fn hackyWorldf32ToChunkRel(chunk_coords: Vector3(i32), pos: rl.Vector3) Vector3(u8) {
-    const max_block_x = (chunk_coords.x + 1) * Chunk.dim.x - 1; // NOTE(caleb): Inclusive
-    const max_block_y = (chunk_coords.y + 1) * Chunk.dim.y - 1;
-    const max_block_z = (chunk_coords.z + 1) * Chunk.dim.z - 1;
+inline fn hackyWorldf32ToChunkRel(chunk_coords: @Vector(3, i32), pos: rl.Vector3) @Vector(3, u8) {
+    const max_block_x = (chunk_coords[0] + 1) * Chunk.dim - 1; // NOTE(caleb): Inclusive
+    const max_block_y = (chunk_coords[1] + 1) * Chunk.dim - 1;
+    const max_block_z = (chunk_coords[2] + 1) * Chunk.dim - 1;
 
-    var result: Vector3(u8) = undefined;
+    var result: @Vector(3, u8) = undefined;
     if (@floatToInt(i32, @floor(pos.x)) <= max_block_x) {
-        result.x = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.x)), @intCast(i32, Chunk.dim.x)));
+        result[0] = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.x)), @intCast(i32, Chunk.dim)));
     } else {
-        result.x = @intCast(u8, Chunk.dim.x);
+        result[0] = @intCast(u8, Chunk.dim);
     }
 
     if (@floatToInt(i32, @floor(pos.y)) <= max_block_y) {
-        result.y = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.y)), @intCast(i32, Chunk.dim.y)));
+        result[1] = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.y)), @intCast(i32, Chunk.dim)));
     } else {
-        result.y = @intCast(u8, Chunk.dim.y);
+        result[1] = @intCast(u8, Chunk.dim);
     }
 
     if (@floatToInt(i32, @floor(pos.z)) <= max_block_z) {
-        result.z = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.z)), @intCast(i32, Chunk.dim.z)));
+        result[2] = @intCast(u8, @mod(@floatToInt(i32, @floor(pos.z)), @intCast(i32, Chunk.dim)));
     } else {
-        result.z = @intCast(u8, Chunk.dim.z);
+        result[2] = @intCast(u8, Chunk.dim);
     }
 
     return result;
@@ -49,7 +47,7 @@ pub fn blockHitFromPoint(chunk: *Chunk, p: rl.Vector3) BlockHit {
     var result: BlockHit = undefined;
 
     const chunk_rel_pos = hackyWorldf32ToChunkRel(chunk.coords, .{ .x = p.x + rl.EPSILON, .y = p.y + rl.EPSILON, .z = p.z + rl.EPSILON });
-    const val = chunk.fetch(chunk_rel_pos.x, chunk_rel_pos.y, chunk_rel_pos.z) orelse 0;
+    const val = chunk.fetch(chunk_rel_pos[0], chunk_rel_pos[1], chunk_rel_pos[2]) orelse 0;
     if (val != 0) { // Left, bottom, or back face
         var plane: Plane = undefined;
         var point_on_face: rl.Vector3 = undefined;
@@ -88,13 +86,13 @@ pub fn blockHitFromPoint(chunk: *Chunk, p: rl.Vector3) BlockHit {
         result.coords = chunk_rel_pos;
     } else {
         if (std.math.approxEqAbs(f32, @round(p.x), p.x, rl.EPSILON)) { // Right face
-            result.coords = Vector3(u8){ .x = chunk_rel_pos.x - 1, .y = chunk_rel_pos.y, .z = chunk_rel_pos.z };
+            result.coords = @Vector(3, u8){ chunk_rel_pos[0] - 1, chunk_rel_pos[1], chunk_rel_pos[2] };
             result.face = Frustum.PlaneIndex.right;
         } else if (std.math.approxEqAbs(f32, @round(p.y), p.y, rl.EPSILON)) { // Top face
-            result.coords = Vector3(u8){ .x = chunk_rel_pos.x, .y = chunk_rel_pos.y - 1, .z = chunk_rel_pos.z };
+            result.coords = @Vector(3, u8){ chunk_rel_pos[0], chunk_rel_pos[1] - 1, chunk_rel_pos[2] };
             result.face = Frustum.PlaneIndex.top;
         } else if (std.math.approxEqAbs(f32, @round(p.z), p.z, rl.EPSILON)) { // Front face
-            result.coords = Vector3(u8){ .x = chunk_rel_pos.x, .y = chunk_rel_pos.y, .z = chunk_rel_pos.z - 1 };
+            result.coords = @Vector(3, u8){ chunk_rel_pos[0], chunk_rel_pos[1], chunk_rel_pos[2] - 1 };
             result.face = Frustum.PlaneIndex.near;
         } else {
             std.debug.print("Front face: {d}, {d}\n", .{ @round(p.z), p.z });

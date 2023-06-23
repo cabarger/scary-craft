@@ -1,34 +1,6 @@
 const std = @import("std");
 const MemoryPoolExtra = std.heap.MemoryPoolExtra;
 
-pub fn Vector3(comptime T: type) type {
-    return packed struct {
-        const Self = @This();
-
-        x: T,
-        y: T,
-        z: T,
-
-        pub inline fn add(v1: Self, v2: Self) Self {
-            return Self{
-                .x = v1.x + v2.x,
-                .y = v1.y + v2.y,
-                .z = v1.z + v2.z,
-            };
-        }
-
-        pub inline fn zero() Self {
-            return Self{ .x = 0, .y = 0, .z = 0 };
-        }
-
-        pub inline fn equals(v1: Self, v2: Self) bool {
-            return ((v1.x == v2.x) and
-                (v1.y == v2.y) and
-                (v1.z == v2.z));
-        }
-    };
-}
-
 pub fn SmolQ(comptime T: type, comptime capacity: u8) type {
     return struct {
         const Self = @This();
