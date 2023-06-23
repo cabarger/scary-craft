@@ -2,8 +2,9 @@ const std = @import("std");
 const rl = @import("rl.zig");
 
 const AutoHashMap = std.AutoHashMap;
-
 const Self = @This();
+
+const hashString = std.hash_map.hashString;
 
 ally: std.mem.Allocator,
 columns: u16,
@@ -14,6 +15,11 @@ id_to_block_data: AutoHashMap(u8, BlockData),
 pub const BlockData = struct {
     is_trans: bool,
 };
+
+/// Calls hashString on name and passes it to map's get().
+pub fn nameToId(self: *Self, name: []const u8) ?u8 {
+    return self.name_to_id.get(hashString(name));
+}
 
 pub fn init(ally: std.mem.Allocator) Self {
     return Self{
