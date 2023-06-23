@@ -150,12 +150,12 @@ fn moveUp(position: *Vector3f32, target: *Vector3f32, up: Vector3f32, distance: 
     target.* += scaled_up;
 }
 
-// Rotates the camera around its right vector, pitch is "looking up and down"
-// NOTE(caleb): this is essentially raylib's camera pitch rotation function.
-//  - lockView prevents camera overrotation (aka "somersaults")
-//  - rotateAroundTarget defines if rotation is around target or around its position
-//  - rotateUp rotates the up direction as well (typically only usefull in CAMERA_FREE)
-// NOTE: angle must be provided in radians
+/// Rotates around right vector, "looking up and down"
+///  - lockView prevents camera overrotation (aka "somersaults")
+///  - rotateAroundTarget defines if rotation is around target or around its position
+///  - rotateUp rotates the up direction as well (typically only usefull in CAMERA_FREE)
+/// NOTE: angle must be provided in radians
+/// NOTE(caleb): This is modified version of raylib's camera pitch rotation function.
 fn rotateX(position: *Vector3f32, target: *Vector3f32, up: *Vector3f32, angle_: f32, lock_view: bool, rotate_around_target: bool, rotate_up: bool) void {
     var angle = angle_;
 
@@ -197,6 +197,23 @@ fn rotateX(position: *Vector3f32, target: *Vector3f32, up: *Vector3f32, angle_: 
 
     if (rotate_up) // Rotate up direction around right axis
         up.* = Vector3f32Ops.rotateByAxisAngle(norm_up, right, angle);
+}
+
+/// Rotates around up vector "looking left and right"
+/// If rotateAroundTarget is false, then rotates around its position
+/// Note: angle must be provided in radians
+/// NOTE(caleb): This is modified version of raylib's camera yaw rotation function.
+fn rotateY(position: *Vector3f32, target: *Vector3f32, up_: Vector3f32, angle: f32, rotate_around_target: bool) void {
+    const up = Vector3f32Ops.normalize(up_);
+
+    var target_position = target.* - position.*;
+    target_position = Vector3f32Ops.rotateByAxisAngle(target_position, up, angle);
+
+    if (rotate_around_target) {
+        position.* = target.* - target_position;
+    } else {
+        target.* = position.* + target_position;
+    }
 }
 
 /// Rotates the camera by rotation amount x,y given in deg
@@ -465,7 +482,8 @@ pub fn main() !void {
         if (camera_in_first_person) {
             player.target = @bitCast(Vector3f32, camera.target);
         } else {
-            rotateX(&player.position, &player.target, &player.up, rl.GetMouseDelta().y * mouse_sens * rl.DEG2RAD, true, false, true);
+            rotateX(&player.position, &player.target, &player.up, rl.GetMouseDelta().y * mouse_sens * rl.DEG2RAD, true, false, false);
+            rotateY(&player.position, &player.target, player.up, -rl.GetMouseDelta().x * mouse_sens * rl.DEG2RAD, false);
         }
 
         updatePositionAndTarget(&player.position, &player.target, player.up, player_velocity + player_velocity_this_frame);
