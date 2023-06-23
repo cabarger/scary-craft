@@ -362,6 +362,7 @@ pub fn main() !void {
     // Game vars -------------------------------------------------------------------------
     var debug_axes = false;
     var debug_text_info = false;
+    var debug_draw_chunk_borders = false;
 
     var player = Player{
         .position = Vector3f32{ 8.0, 8.0, 8.0 },
@@ -413,6 +414,7 @@ pub fn main() !void {
         if (rl.IsKeyPressed(rl.KEY_F1)) {
             debug_axes = !debug_axes;
             debug_text_info = !debug_text_info;
+            debug_draw_chunk_borders = !debug_draw_chunk_borders;
         }
 
         if (rl.IsKeyPressed(rl.KEY_F2)) { // toggle god mode
@@ -582,8 +584,22 @@ pub fn main() !void {
         // }
 
         // Only draw this mesh if it's within the view frustum
-        for (chunk_meshes) |chunk_mesh|
+        for (chunk_meshes) |chunk_mesh| {
             rl.DrawMesh(chunk_mesh.mesh, default_material, rl.MatrixIdentity());
+
+            if (debug_draw_chunk_borders) {
+                const chunk_bounding_box = rl.BoundingBox{ .min = rl.Vector3{
+                    .x = @intToFloat(f32, chunk_mesh.coords.x * Chunk.dim.x),
+                    .y = @intToFloat(f32, chunk_mesh.coords.y * Chunk.dim.y),
+                    .z = @intToFloat(f32, chunk_mesh.coords.z * Chunk.dim.z),
+                }, .max = rl.Vector3{
+                    .x = @intToFloat(f32, chunk_mesh.coords.x * Chunk.dim.x + Chunk.dim.x),
+                    .y = @intToFloat(f32, chunk_mesh.coords.y * Chunk.dim.y + Chunk.dim.y),
+                    .z = @intToFloat(f32, chunk_mesh.coords.z * Chunk.dim.z + Chunk.dim.z),
+                } };
+                rl.DrawBoundingBox(chunk_bounding_box, rl.GREEN);
+            }
+        }
 
         if (!camera_in_first_person) {
             rl.DrawBoundingBox(playerBoundingBox(player.position), rl.GREEN);
