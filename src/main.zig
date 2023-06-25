@@ -327,7 +327,7 @@ pub fn main() !void {
     const font = rl.LoadFont("data/FiraCode-Medium.ttf");
 
     // Arena init -------------------------------------------------------------------------
-    var back_buffer = try std.heap.page_allocator.alloc(u8, 1024 * 1024 * 5); // 5mb
+    var back_buffer = try std.heap.page_allocator.alloc(u8, 1024 * 1024 * 10); // 5mb
     var fb_instance = std.heap.FixedBufferAllocator.init(back_buffer);
     var arena_instance = std.heap.ArenaAllocator.init(fb_instance.allocator());
     var arena = arena_instance.allocator();

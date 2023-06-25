@@ -13,7 +13,7 @@ const hashString = std.hash_map.hashString;
 
 const Self = @This();
 
-pub const loaded_chunk_capacity = 7;
+pub const loaded_chunk_capacity = 10;
 pub const chunk_cache_capacity = loaded_chunk_capacity * 3;
 
 pub const WorldSaveHeader = packed struct {
@@ -30,6 +30,7 @@ chunk_cache: [chunk_cache_capacity]Chunk,
 loaded_chunks: [loaded_chunk_capacity]*Chunk,
 chunk_cache_st: BSTExtra(ChunkHandle, .{ .preheated_node_count = chunk_cache_capacity, .growable = false }, cstGoLeft, cstFoundTarget),
 world_chunk_st: BST(ChunkHandle, cstGoLeft, cstFoundTarget),
+save_file: std.fs.File,
 
 pub fn init(ally: std.mem.Allocator) Self {
     var result: Self = undefined;
@@ -94,9 +95,8 @@ pub fn writeDummySave(world_save_path: []const u8, atlas: *Atlas) !void {
 }
 
 pub fn loadSave(world: *Self, world_save_path: []const u8) !void {
-    const world_save_file = try std.fs.cwd().openFile(world_save_path, .{});
-    defer world_save_file.close();
-    const save_file_reader = world_save_file.reader();
+    world.save_file = try std.fs.cwd().openFile(world_save_path, .{ .mode = std.fs.File.OpenMode.read_write });
+    const save_file_reader = world.save_file.reader();
     const world_save_header = try save_file_reader.readStruct(WorldSaveHeader);
     for (0..world_save_header.chunk_count) |_| {
         const world_save_chunk = try save_file_reader.readStruct(ChunkHandle);
@@ -185,6 +185,29 @@ fn queueChunks(
     }
 }
 
+/// FIXME(caleb): Assumes header bytes have already been read.
+fn writeChunkToDisk(world_save_f: std.fs.File, chunk: *Chunk, chunk_handle: ChunkHandle) !void {
+    var world_save_reader = world_save_f.reader();
+    var world_save_writer = world_save_f.writer();
+
+    try world_save_reader.skipBytes((@sizeOf(ChunkHandle) + @intCast(u32, Chunk.dim) * @intCast(u32, Chunk.dim) * @intCast(i32, Chunk.dim)) * (chunk_handle.index - 1), .{});
+    try world_save_writer.writeStruct(ChunkHandle{ .index = chunk_handle.index, .coords = chunk_handle.coords });
+    try world_save_writer.writeAll(&chunk.block_data);
+}
+
+fn readChunkFromDisk(world_save_f: std.fs.File, chunk: *Chunk, world_chunk_handle: ChunkHandle) !void {
+    var world_save_reader = world_save_f.reader();
+    try world_save_reader.skipBytes(@sizeOf(WorldSaveHeader), .{});
+    std.debug.assert(world_chunk_handle.index > 0);
+    try world_save_reader.skipBytes((@sizeOf(ChunkHandle) + @intCast(u32, Chunk.dim) * @intCast(u32, Chunk.dim) * @intCast(i32, Chunk.dim)) * (world_chunk_handle.index - 1), .{});
+    const world_save_chunk = try world_save_reader.readStruct(ChunkHandle);
+
+    chunk.index = world_save_chunk.index;
+    chunk.coords = world_save_chunk.coords;
+    chunk.block_data = try world_save_reader.readBytesNoEof(Chunk.dim * Chunk.dim * Chunk.dim);
+}
+
+///NOTE(caleb): Stop opening the file so much dum dum.
 /// Load 'loaded_chunk_capacity' chunks into active_chunks around the player.
 pub fn loadChunks(
     self: *Self,
@@ -232,44 +255,29 @@ pub fn loadChunks(
                 const removed_chunk_handle = self.chunk_cache_st.remove(.{ .index = undefined, .coords = chunk_to_remove_ptr.coords }) orelse unreachable;
                 chunk_cache_index = removed_chunk_handle.index;
 
-                const world_save_file = try std.fs.cwd().openFile("data/world.sav", .{ .mode = std.fs.File.OpenMode.read_write });
-                defer world_save_file.close();
-
-                const world_save_reader = world_save_file.reader(); // Read header
+                try self.save_file.seekTo(0);
+                const world_save_reader = self.save_file.reader(); // Read header
                 const save_header = world_save_reader.readStruct(WorldSaveHeader) catch unreachable;
-                const world_save_writer = world_save_file.writer(); // Update header
+                const world_save_writer = self.save_file.writer(); // Update header
 
                 const world_chunk_handle = self.world_chunk_st.search(.{ .index = undefined, .coords = removed_chunk_handle.coords }) orelse ablk: {
-                    try world_save_file.seekTo(0);
+                    try self.save_file.seekTo(0);
                     try world_save_writer.writeStruct(WorldSaveHeader{ .chunk_count = save_header.chunk_count + 1 });
                     try self.world_chunk_st.insert(.{ .index = save_header.chunk_count + 1, .coords = removed_chunk_handle.coords });
                     break :ablk ChunkHandle{ .index = save_header.chunk_count + 1, .coords = removed_chunk_handle.coords };
                 };
-
-                try world_save_reader.skipBytes((@sizeOf(ChunkHandle) + @intCast(u32, Chunk.dim) * @intCast(u32, Chunk.dim) * @intCast(i32, Chunk.dim)) * (world_chunk_handle.index - 1), .{});
-                try world_save_writer.writeStruct(ChunkHandle{ .index = world_chunk_handle.index, .coords = world_chunk_handle.coords });
-                try world_save_writer.writeAll(&self.chunk_cache[chunk_cache_index].block_data);
+                try writeChunkToDisk(self.save_file, &self.chunk_cache[chunk_cache_index], world_chunk_handle);
             }
 
             const world_chunk_handle = self.world_chunk_st.search(.{ .index = 0, .coords = chunk_coords });
             if (world_chunk_handle != null) { // Use save chunk's id to retrive from disk
-                const world_save_file = try std.fs.cwd().openFile("data/world.sav", .{});
-                defer world_save_file.close();
-                const world_save_reader = world_save_file.reader();
-                try world_save_reader.skipBytes(@sizeOf(WorldSaveHeader), .{});
-                std.debug.assert(world_chunk_handle.?.index > 0);
-                try world_save_reader.skipBytes((@sizeOf(ChunkHandle) + @intCast(u32, Chunk.dim) * @intCast(u32, Chunk.dim) * @intCast(i32, Chunk.dim)) * (world_chunk_handle.?.index - 1), .{});
-                const world_save_chunk = try world_save_reader.readStruct(ChunkHandle);
-
-                self.chunk_cache[chunk_cache_index].index = world_save_chunk.index;
-                self.chunk_cache[chunk_cache_index].coords = world_save_chunk.coords;
-                self.chunk_cache[chunk_cache_index].block_data = try world_save_reader.readBytesNoEof(Chunk.dim * Chunk.dim * Chunk.dim);
+                try self.save_file.seekTo(0);
+                try readChunkFromDisk(self.save_file, &self.chunk_cache[chunk_cache_index], world_chunk_handle.?);
             } else {
                 self.chunk_cache[chunk_cache_index].index = 0;
                 self.chunk_cache[chunk_cache_index].coords = chunk_coords;
                 for (&self.chunk_cache[chunk_cache_index].block_data) |*byte| byte.* = 0;
             }
-
             const inserted_chunk_handle = ChunkHandle{ .index = chunk_cache_index, .coords = chunk_coords };
             self.chunk_cache_st.insert(inserted_chunk_handle) catch unreachable;
             break :blk inserted_chunk_handle;
