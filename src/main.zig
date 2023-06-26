@@ -23,11 +23,11 @@ const Vector3f32Ops = VectorOps(3, f32);
 const Vector3f32 = @Vector(3, f32);
 
 // FIXME(caleb):
+// Cases where player/camera position desync.
 // Fix the renderer :( - glass
 
 // TODO(caleb):
 // OBJECTIVES (possibly in the form of notes that you can pick up?)
-// INSERT SCARY ENEMY IDEAS HERE...
 // Frustum culling ( do this when game gets slow? )
 // NON JANK console
 
@@ -42,10 +42,10 @@ const player_width = meters_per_block * 0.1;
 const player_height = meters_per_block * 1.5;
 const player_length = player_width;
 
-const gravity_y_per_second = meters_per_block * 0.2;
-const jump_y_velocity = 0.07;
+const gravity_y_per_second = meters_per_block * 0.25;
+const jump_y_velocity = 0.1;
 
-const target_fps = 120;
+const target_fps = 60;
 const fovy = 60.0;
 const crosshair_block_range = 4;
 const move_speed_blocks_per_second = 4;
@@ -385,6 +385,14 @@ pub fn main() !void {
     var empty_str = try std.fmt.bufPrintZ(&command_buffer, "", .{});
     var held_block_id = atlas.nameToId("default_grass") orelse unreachable;
 
+    // Scary enemy that chases player around
+    var enemy_model = rl.LoadModel("data/models/void_man/Void.glb");
+    defer rl.UnloadModel(enemy_model);
+
+    var anim_count: c_uint = 0;
+    var anim_frame_counter: c_int = 0;
+    var enemy_model_animations = rl.LoadModelAnimations("data/models/void_man/Void.glb", &anim_count);
+
     // Initial chunk loading -------------------------------------------------------------------------
     try World.writeDummySave("data/world.sav", &atlas);
     var world = World.init(arena);
@@ -581,6 +589,11 @@ pub fn main() !void {
             }
         }
 
+        // Update enemey model
+        anim_frame_counter += 1;
+        rl.UpdateModelAnimation(enemy_model, enemy_model_animations[0], anim_frame_counter);
+        if (anim_frame_counter >= enemy_model_animations[0].frameCount) anim_frame_counter = 0;
+
         // Drawing happens here  -------------------------------------------------------------------------
         rl.BeginDrawing();
         rl.ClearBackground(rl.BLACK);
@@ -610,6 +623,10 @@ pub fn main() !void {
                 rl.DrawBoundingBox(chunk_bounding_box, rl.GREEN);
             }
         }
+
+        // Enemy model
+        // rl.DrawModelEx(enemy_model, rl.Vector3{.x = 0, .y = 0, .z = 0}, rl.Vector3{.x = 0, .y = 0, .z = 0})
+        rl.DrawModel(enemy_model, rl.Vector3{ .x = 8, .y = 1, .z = 8 }, 0.16, rl.WHITE);
 
         if (!camera_in_first_person) {
             rl.DrawBoundingBox(playerBoundingBox(player.position), rl.GREEN);
