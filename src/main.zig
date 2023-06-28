@@ -385,13 +385,13 @@ pub fn main() !void {
     var empty_str = try std.fmt.bufPrintZ(&command_buffer, "", .{});
     var held_block_id = atlas.nameToId("default_grass") orelse unreachable;
 
-    // Scary enemy that chases player around
-    var enemy_model = rl.LoadModel("data/models/void_man/Void.glb");
-    defer rl.UnloadModel(enemy_model);
+    // Scary enemy that chases player around (greg)
+    var greg_model = rl.LoadModel("data/models/void_man/Void.glb");
+    defer rl.UnloadModel(greg_model);
 
     var anim_count: c_uint = 0;
     var anim_frame_counter: c_int = 0;
-    var enemy_model_animations = rl.LoadModelAnimations("data/models/void_man/Void.glb", &anim_count);
+    var greg_model_animations = rl.LoadModelAnimations("data/models/void_man/Void.glb", &anim_count);
 
     // Initial chunk loading -------------------------------------------------------------------------
     try World.writeDummySave("data/world.sav", &atlas);
@@ -591,8 +591,8 @@ pub fn main() !void {
 
         // Update enemey model
         anim_frame_counter += 1;
-        rl.UpdateModelAnimation(enemy_model, enemy_model_animations[0], anim_frame_counter);
-        if (anim_frame_counter >= enemy_model_animations[0].frameCount) anim_frame_counter = 0;
+        rl.UpdateModelAnimation(greg_model, greg_model_animations[0], anim_frame_counter);
+        if (anim_frame_counter >= greg_model_animations[0].frameCount) anim_frame_counter = 0;
 
         // Drawing happens here  -------------------------------------------------------------------------
         rl.BeginDrawing();
@@ -625,8 +625,8 @@ pub fn main() !void {
         }
 
         // Enemy model
-        // rl.DrawModelEx(enemy_model, rl.Vector3{.x = 0, .y = 0, .z = 0}, rl.Vector3{.x = 0, .y = 0, .z = 0})
-        rl.DrawModel(enemy_model, rl.Vector3{ .x = 8, .y = 1, .z = 8 }, 0.16, rl.WHITE);
+        // rl.DrawModelEx(greg_model, rl.Vector3{.x = 0, .y = 0, .z = 0}, rl.Vector3{.x = 0, .y = 0, .z = 0})
+        rl.DrawModel(greg_model, rl.Vector3{ .x = 8, .y = 1, .z = 8 }, 0.16, rl.WHITE);
 
         if (!camera_in_first_person) {
             rl.DrawBoundingBox(playerBoundingBox(player.position), rl.GREEN);

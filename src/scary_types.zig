@@ -27,6 +27,7 @@ pub fn SmolQ(comptime T: type, comptime capacity: u8) type {
     };
 }
 
+// TODO(caleb): key type for searches and removals.
 pub fn BST(
     comptime T: type,
     comptime goLeftFn: fn (lhs: T, rhs: T) bool,
